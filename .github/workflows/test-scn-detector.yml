@@ -1045,10 +1045,8 @@ jobs:
         run: |
           mkdir -p terraform
           cat > terraform/appconfig.tf << 'FIXTURE'
-          resource "aws_appconfig_environment" "staging" {
-            application_id = "abc123"
-            name           = "staging-env"
-            description    = "Staging environment for feature flags"
+          resource "aws_appconfig_application" "flags" {
+            name = "feature-flags-app"
           }
           FIXTURE
           git config user.name "GitHub Actions"
