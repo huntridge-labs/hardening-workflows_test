@@ -985,7 +985,7 @@ jobs:
 
       - name: Run SCN detector (dry-run)
         id: scn
-        uses: huntridge-labs/argus/.github/actions/scn-detector@feat/scn-dry-run-manual-review
+        uses: huntridge-labs/argus/.github/actions/scn-detector@sully/mcn-prototype
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -1058,7 +1058,7 @@ jobs:
 
       - name: Run SCN detector (dry-run)
         id: scn
-        uses: huntridge-labs/argus/.github/actions/scn-detector@feat/scn-dry-run-manual-review
+        uses: huntridge-labs/argus/.github/actions/scn-detector@sully/mcn-prototype
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
