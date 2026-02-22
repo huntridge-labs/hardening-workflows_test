@@ -19,12 +19,14 @@ permissions:
 # ============================================================================
 # SCN Detector tests: validate huntridge-labs/argus scn-detector action
 #
-# Tests S1-S15 cover:
+# Tests S1-S17 cover:
 # - All 4 FedRAMP SCN categories (ROUTINE, ADAPTIVE, TRANSFORMATIVE, IMPACT)
 # - Multiple IaC formats (Terraform, Kubernetes, CloudFormation)
 # - fail_on_category enforcement
 # - No-IaC-change detection
 # - Multi-category classification (highest wins)
+# - Dry-run mode (issue payloads without API calls)
+# - MANUAL_REVIEW detection (unmatched resources)
 #
 # Each test creates IaC fixtures via git commit, then runs the action
 # with base_ref=HEAD~1 and head_ref=HEAD to analyze the diff.
@@ -952,6 +954,149 @@ jobs:
           [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
           [ "$FAILURES" -eq 0 ] || exit 1
 
+  # --------------------------------------------------------------------------
+  # S16: Dry-run mode — issue payloads generated without API calls
+  # Uses same fixture as S4 (ADAPTIVE), with dry_run=true and create_issues=true
+  # --------------------------------------------------------------------------
+  s16-dry-run-issues:
+    name: "S16: dry-run issue creation"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p terraform
+          cat > terraform/iam-attach.tf << 'FIXTURE'
+          resource "aws_iam_policy_attachment" "app_attach" {
+            name       = "app-policy-attachment"
+            roles      = ["app-role"]
+            policy_arn = "arn:aws:iam::policy/ReadOnlyAccess"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/iam-attach.tf
+          git commit -m "test: add IAM attachment for dry-run test"
+
+      - name: Run SCN detector (dry-run)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@feat/scn-dry-run-manual-review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: true
+          post_pr_comment: true
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+          dry_run: true
+
+      - name: Verify dry-run outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+        run: |
+          echo "## S16: dry-run-issues" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+
+          # Should still detect changes
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "ADAPTIVE" ] || { echo "FAIL: category=$CATEGORY (expected ADAPTIVE)"; FAILURES=$((FAILURES + 1)); }
+
+          # Dry-run JSON should exist with correct structure
+          if [ -f scn-reports/dry-run-issues.json ]; then
+            echo "dry-run-issues.json found"
+            TOTAL=$(python3 -c "import json; d=json.load(open('scn-reports/dry-run-issues.json')); print(d['total'])")
+            IS_DRY_RUN=$(python3 -c "import json; d=json.load(open('scn-reports/dry-run-issues.json')); print(d['dry_run'])")
+            [ "$IS_DRY_RUN" = "True" ] || { echo "FAIL: dry_run flag not set"; FAILURES=$((FAILURES + 1)); }
+            [ "$TOTAL" -ge 1 ] || { echo "FAIL: total=$TOTAL (expected >=1)"; FAILURES=$((FAILURES + 1)); }
+          else
+            echo "FAIL: scn-reports/dry-run-issues.json not found"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          # PR comment report should exist (written by report generator)
+          [ -f scn-summaries/scn-report.md ] || { echo "FAIL: scn-report.md not found"; FAILURES=$((FAILURES + 1)); }
+
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all dry-run assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S17: MANUAL_REVIEW — unmatched resource triggers manual review
+  # Uses a Terraform resource that doesn't match any rule in the default profile
+  # --------------------------------------------------------------------------
+  s17-manual-review:
+    name: "S17: manual review detection"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create unmatched IaC change
+        run: |
+          mkdir -p terraform
+          cat > terraform/appconfig.tf << 'FIXTURE'
+          resource "aws_appconfig_environment" "staging" {
+            application_id = "abc123"
+            name           = "staging-env"
+            description    = "Staging environment for feature flags"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/appconfig.tf
+          git commit -m "test: add unmatched resource for manual review"
+
+      - name: Run SCN detector (dry-run)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@feat/scn-dry-run-manual-review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: true
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+          dry_run: true
+
+      - name: Verify manual review classification
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          MANUAL_REVIEW: ${{ steps.scn.outputs.manual_review_count }}
+        run: |
+          echo "## S17: manual-review" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY manual_review=$MANUAL_REVIEW" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "${MANUAL_REVIEW:-0}" -ge 1 ] || { echo "FAIL: manual_review_count=$MANUAL_REVIEW (expected >=1)"; FAILURES=$((FAILURES + 1)); }
+
+          # Dry-run JSON should NOT contain MANUAL_REVIEW issues (not merging to default branch)
+          if [ -f scn-reports/dry-run-issues.json ]; then
+            MR_COUNT=$(python3 -c "
+          import json
+          d = json.load(open('scn-reports/dry-run-issues.json'))
+          mr = [i for i in d.get('issues', []) if i.get('category') == 'MANUAL_REVIEW']
+          print(len(mr))
+          ")
+            [ "$MR_COUNT" -eq 0 ] || { echo "FAIL: MANUAL_REVIEW issues=$MR_COUNT (expected 0 — not merging to default)"; FAILURES=$((FAILURES + 1)); }
+          fi
+
+          [ "$FAILURES" -eq 0 ] && echo "PASS: manual review correctly detected"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
   # ==========================================================================
   # Validate results + build JSON output for dashboard
   # ==========================================================================
@@ -975,6 +1120,8 @@ jobs:
       - s13-fail-on-impact
       - s14-fail-on-adaptive
       - s15-mixed-multi-category
+      - s16-dry-run-issues
+      - s17-manual-review
     if: always()
     outputs:
       results: ${{ steps.collect.outputs.results }}
@@ -996,6 +1143,8 @@ jobs:
           S13: ${{ needs.s13-fail-on-impact.result }}
           S14: ${{ needs.s14-fail-on-adaptive.result }}
           S15: ${{ needs.s15-mixed-multi-category.result }}
+          S16: ${{ needs.s16-dry-run-issues.result }}
+          S17: ${{ needs.s17-manual-review.result }}
         run: |
           FAILURES=0
 
@@ -1029,10 +1178,12 @@ jobs:
           check "S13 fail-on-impact" "$S13" "success"
           check "S14 fail-on-adaptive" "$S14" "success"
           check "S15 mixed-multi-category" "$S15" "success"
+          check "S16 dry-run-issues" "$S16" "success"
+          check "S17 manual-review" "$S17" "success"
 
           echo ""
           echo "============================================"
-          TOTAL=15
+          TOTAL=17
           PASSED=$((TOTAL - FAILURES))
           echo "Results: $PASSED/$TOTAL passed"
           echo "============================================"
@@ -1061,6 +1212,8 @@ jobs:
           S13: ${{ needs.s13-fail-on-impact.result }}
           S14: ${{ needs.s14-fail-on-adaptive.result }}
           S15: ${{ needs.s15-mixed-multi-category.result }}
+          S16: ${{ needs.s16-dry-run-issues.result }}
+          S17: ${{ needs.s17-manual-review.result }}
         run: |
           to_status() {
             local got="$1" expected="$2"
@@ -1093,6 +1246,8 @@ jobs:
             --arg s13 "$(to_status "$S13" success)" \
             --arg s14 "$(to_status "$S14" success)" \
             --arg s15 "$(to_status "$S15" success)" \
+            --arg s16 "$(to_status "$S16" success)" \
+            --arg s17 "$(to_status "$S17" success)" \
             '[
               {"id":"S1","name":"routine tags","detail":"Terraform tags.* pattern — ROUTINE classification","status":$s1},
               {"id":"S2","name":"routine description","detail":"Terraform description pattern — ROUTINE classification","status":$s2},
@@ -1108,6 +1263,8 @@ jobs:
               {"id":"S12","name":"no IaC changes","detail":"Non-IaC file — has_changes=false","status":$s12},
               {"id":"S13","name":"fail on impact","detail":"fail_on_category=impact — enforcement","status":$s13},
               {"id":"S14","name":"fail on adaptive","detail":"fail_on_category=adaptive — enforcement","status":$s14},
-              {"id":"S15","name":"mixed multi-category","detail":"Routine + Impact files — highest category wins","status":$s15}
+              {"id":"S15","name":"mixed multi-category","detail":"Routine + Impact files — highest category wins","status":$s15},
+              {"id":"S16","name":"dry-run issues","detail":"Dry-run mode — issue payloads without API calls","status":$s16},
+              {"id":"S17","name":"manual review","detail":"Unmatched resource — MANUAL_REVIEW classification","status":$s17}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

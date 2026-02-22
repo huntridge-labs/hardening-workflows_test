@@ -174,6 +174,8 @@ Validates the [argus scn-detector](https://github.com/huntridge-labs/argus) acti
 | S13 | fail-on-impact | Terraform | IMPACT (fails) | `fail_on_category=impact` enforcement |
 | S14 | fail-on-adaptive | Terraform | ADAPTIVE (fails) | `fail_on_category=adaptive` enforcement |
 | S15 | mixed-multi-category | Terraform (multi-file) | IMPACT | Highest category wins |
+| S16 | dry-run-issues | Terraform | ADAPTIVE | Dry-run mode: issue payloads without API calls |
+| S17 | manual-review | Terraform | MANUAL_REVIEW | Unmatched resource triggers manual review |
 
 ### Regression Tests — `test-suite.yml`
 
