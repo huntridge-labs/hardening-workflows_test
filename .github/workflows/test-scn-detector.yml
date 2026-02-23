@@ -1234,7 +1234,6 @@ jobs:
           mkdir -p terraform
           cat > terraform/kms-key.tf << 'FIXTURE'
           resource "aws_kms_key" "data_encryption" {
-            description             = "KMS key for data encryption"
             deletion_window_in_days = 30
             enable_key_rotation     = true
           }
@@ -1274,7 +1273,7 @@ jobs:
           [ "$FAILURES" -eq 0 ] || exit 1
 
   # --------------------------------------------------------------------------
-  # S21: K8s classification — version annotation (single commit)
+  # S21: K8s classification — version annotation (2-commit modify)
   # Rule: pattern 'kubernetes.io/.*version' → ADAPTIVE
   # --------------------------------------------------------------------------
   s21-k8s-classification:
@@ -1287,8 +1286,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create K8s manifest with version annotation
+      - name: Create baseline then update version
         run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
           mkdir -p k8s
           cat > k8s/versioned-deploy.yaml << 'FIXTURE'
           apiVersion: apps/v1
@@ -1296,28 +1298,35 @@ jobs:
           metadata:
             name: api-server
             labels:
-              app.kubernetes.io/name: api-server
+              app.kubernetes.io/version: "1.0.0"
+          spec:
+            replicas: 3
+            template:
+              spec:
+                containers:
+                - name: api
+                  image: api-server:1.0.0
+          FIXTURE
+          git add k8s/versioned-deploy.yaml
+          git commit -m "test: baseline K8s deployment"
+
+          cat > k8s/versioned-deploy.yaml << 'FIXTURE'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: api-server
+            labels:
               app.kubernetes.io/version: "2.1.0"
           spec:
             replicas: 3
-            selector:
-              matchLabels:
-                app: api-server
             template:
-              metadata:
-                labels:
-                  app: api-server
               spec:
                 containers:
                 - name: api
                   image: api-server:2.1.0
-                  ports:
-                  - containerPort: 8080
           FIXTURE
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
           git add k8s/versioned-deploy.yaml
-          git commit -m "test: add K8s deployment with version annotation"
+          git commit -m "test: update K8s version annotation"
 
       - name: Run SCN detector
         id: scn
@@ -1488,17 +1497,11 @@ jobs:
           mkdir -p terraform
           cat > terraform/mixed-resources.tf << 'FIXTURE'
           resource "aws_instance" "app" {
-            instance_type = "t3.small"
-
-            tags = {
-              Name = "multi-resource-test"
-              Team = "security"
-            }
+            tags = { Name = "test" }
           }
 
           resource "aws_security_group" "wide_open" {
             name = "wide-open-sg"
-
             ingress {
               cidr_blocks = ["0.0.0.0/0"]
               from_port   = 22
