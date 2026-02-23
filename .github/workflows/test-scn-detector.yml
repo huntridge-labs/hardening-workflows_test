@@ -1606,6 +1606,26 @@ jobs:
               FAILURES=$((FAILURES + 1))
               ;;
           esac
+
+          # Verify classification JSON proves AI was actually invoked
+          if [ -f scn-reports/scn-classifications.json ]; then
+            METHOD=$(jq -r '.classifications[0].method' scn-reports/scn-classifications.json)
+            AI_MODEL=$(jq -r '.classifications[0].ai_model // empty' scn-reports/scn-classifications.json)
+            CONFIDENCE=$(jq -r '.classifications[0].confidence // 0' scn-reports/scn-classifications.json)
+            REASONING=$(jq -r '.classifications[0].reasoning // empty' scn-reports/scn-classifications.json)
+            AI_ENABLED=$(jq -r '.ai_enabled' scn-reports/scn-classifications.json)
+
+            echo "method=$METHOD ai_model=$AI_MODEL confidence=$CONFIDENCE ai_enabled=$AI_ENABLED" >> $GITHUB_STEP_SUMMARY
+            echo "reasoning=$REASONING" >> $GITHUB_STEP_SUMMARY
+
+            [ "$METHOD" = "ai-fallback" ] || { echo "FAIL: method=$METHOD (expected ai-fallback)"; FAILURES=$((FAILURES + 1)); }
+            [ -n "$AI_MODEL" ] || { echo "FAIL: ai_model is empty (expected model identifier)"; FAILURES=$((FAILURES + 1)); }
+            [ "$AI_ENABLED" = "true" ] || { echo "FAIL: ai_enabled=$AI_ENABLED (expected true)"; FAILURES=$((FAILURES + 1)); }
+          else
+            echo "FAIL: scn-classifications.json not found"
+            FAILURES=$((FAILURES + 1))
+          fi
+
           [ "$FAILURES" -eq 0 ] && echo "PASS: AI fallback correctly classified unmatched resource"
           [ "$FAILURES" -eq 0 ] || exit 1
 
