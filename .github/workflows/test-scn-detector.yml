@@ -19,7 +19,7 @@ permissions:
 # ============================================================================
 # SCN Detector tests: validate huntridge-labs/argus scn-detector action
 #
-# Tests S1-S24 cover:
+# Tests S1-S25 cover:
 # - All 4 FedRAMP SCN categories (ROUTINE, ADAPTIVE, TRANSFORMATIVE, IMPACT)
 # - MANUAL_REVIEW detection (unmatched resources)
 # - Multiple IaC formats (Terraform, Kubernetes, CloudFormation)
@@ -31,6 +31,7 @@ permissions:
 # - Delete operation detection (git rm)
 # - Custom config_file input (profile override)
 # - Single-file multi-resource extraction
+# - AI fallback classification (LLM for unmatched resources)
 #
 # Each test creates IaC fixtures via git commit, then runs the action
 # with base_ref=HEAD~1 and head_ref=HEAD to analyze the diff.
@@ -1542,6 +1543,72 @@ jobs:
           [ "$FAILURES" -eq 0 ] && echo "PASS: single-file multi-resource correctly classified"
           [ "$FAILURES" -eq 0 ] || exit 1
 
+  # --------------------------------------------------------------------------
+  # S25: AI fallback — unmatched resource classified by LLM
+  # Uses same unmatched resource as S17 (aws_appconfig_application) but with
+  # enable_ai_fallback=true. AI should classify it into a real FedRAMP
+  # category instead of MANUAL_REVIEW.
+  # --------------------------------------------------------------------------
+  s25-ai-fallback:
+    name: "S25: AI fallback classification"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create unmatched IaC resource
+        run: |
+          mkdir -p terraform
+          cat > terraform/appconfig-ai.tf << 'FIXTURE'
+          resource "aws_appconfig_application" "ai_classified" {
+            name = "feature-flags-ai-test"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/appconfig-ai.tf
+          git commit -m "test: add unmatched resource for AI fallback classification"
+
+      - name: Run SCN detector (AI fallback enabled)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@sully/mcn-prototype
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: true
+          fail_on_category: 'none'
+
+      - name: Verify AI classified (not MANUAL_REVIEW)
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          MANUAL_REVIEW: ${{ steps.scn.outputs.manual_review_count }}
+        run: |
+          echo "## S25: ai-fallback" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY manual_review=$MANUAL_REVIEW" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "${MANUAL_REVIEW:-0}" -eq 0 ] || { echo "FAIL: manual_review_count=$MANUAL_REVIEW (expected 0 — AI should classify)"; FAILURES=$((FAILURES + 1)); }
+          case "$CATEGORY" in
+            ROUTINE|ADAPTIVE|TRANSFORMATIVE|IMPACT)
+              echo "AI classified as $CATEGORY"
+              ;;
+            *)
+              echo "FAIL: category=$CATEGORY (expected one of ROUTINE/ADAPTIVE/TRANSFORMATIVE/IMPACT)"
+              FAILURES=$((FAILURES + 1))
+              ;;
+          esac
+          [ "$FAILURES" -eq 0 ] && echo "PASS: AI fallback correctly classified unmatched resource"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
   # ==========================================================================
   # Validate results + build JSON output for dashboard
   # ==========================================================================
@@ -1574,6 +1641,7 @@ jobs:
       - s22-cfn-classification
       - s23-custom-config
       - s24-single-file-multi-resource
+      - s25-ai-fallback
     if: always()
     outputs:
       results: ${{ steps.collect.outputs.results }}
@@ -1604,6 +1672,7 @@ jobs:
           S22: ${{ needs.s22-cfn-classification.result }}
           S23: ${{ needs.s23-custom-config.result }}
           S24: ${{ needs.s24-single-file-multi-resource.result }}
+          S25: ${{ needs.s25-ai-fallback.result }}
         run: |
           FAILURES=0
 
@@ -1646,10 +1715,11 @@ jobs:
           check "S22 cfn-classification" "$S22" "success"
           check "S23 custom-config" "$S23" "success"
           check "S24 single-file-multi-resource" "$S24" "success"
+          check "S25 ai-fallback" "$S25" "success"
 
           echo ""
           echo "============================================"
-          TOTAL=24
+          TOTAL=25
           PASSED=$((TOTAL - FAILURES))
           echo "Results: $PASSED/$TOTAL passed"
           echo "============================================"
@@ -1687,6 +1757,7 @@ jobs:
           S22: ${{ needs.s22-cfn-classification.result }}
           S23: ${{ needs.s23-custom-config.result }}
           S24: ${{ needs.s24-single-file-multi-resource.result }}
+          S25: ${{ needs.s25-ai-fallback.result }}
         run: |
           to_status() {
             local got="$1" expected="$2"
@@ -1728,6 +1799,7 @@ jobs:
             --arg s22 "$(to_status "$S22" success)" \
             --arg s23 "$(to_status "$S23" success)" \
             --arg s24 "$(to_status "$S24" success)" \
+            --arg s25 "$(to_status "$S25" success)" \
             '[
               {"id":"S1","name":"routine tags","detail":"Terraform tags.* pattern — ROUTINE classification","status":$s1},
               {"id":"S2","name":"routine description","detail":"Terraform description pattern — ROUTINE classification","status":$s2},
@@ -1752,6 +1824,7 @@ jobs:
               {"id":"S21","name":"k8s classification","detail":"K8s version annotation — ADAPTIVE classification","status":$s21},
               {"id":"S22","name":"cfn classification","detail":"CFN S3 bucket tags — ROUTINE classification","status":$s22},
               {"id":"S23","name":"custom config","detail":"Custom config_file — overrides default profile","status":$s23},
-              {"id":"S24","name":"single-file multi-resource","detail":"Two resources in one .tf — per-resource extraction","status":$s24}
+              {"id":"S24","name":"single-file multi-resource","detail":"Two resources in one .tf — per-resource extraction","status":$s24},
+              {"id":"S25","name":"AI fallback","detail":"Unmatched resource — AI classification instead of MANUAL_REVIEW","status":$s25}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
