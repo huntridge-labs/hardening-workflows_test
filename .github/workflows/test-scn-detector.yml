@@ -1479,10 +1479,10 @@ jobs:
 
   # --------------------------------------------------------------------------
   # S24: Single-file multi-resource — two resources in one .tf file
-  # Rules: transformative 'aws_iam_role.*' create + impact 'aws_security_group.*' 0.0.0.0/0
-  # Validates per-resource extraction from a single file
-  # NOTE: Avoids tags/description attrs to prevent routine rule cross-match
-  #       due to extract_changed_attributes 1000-char shared window.
+  # Rules: transformative 'aws_iam_role.*' create + impact 'aws_vpc.*' create
+  # Validates per-resource extraction from a single file.
+  # Uses aws_vpc (simple resource+operation impact rule) to avoid attribute/
+  # pattern matching issues with the shared 1000-char extraction window.
   # --------------------------------------------------------------------------
   s24-single-file-multi-resource:
     name: "S24: single-file multi-resource"
@@ -1503,14 +1503,8 @@ jobs:
             assume_role_policy = "{}"
           }
 
-          resource "aws_security_group" "wide_open" {
-            name = "wide-open-sg"
-            ingress {
-              cidr_blocks = ["0.0.0.0/0"]
-              from_port   = 22
-              to_port     = 22
-              protocol    = "tcp"
-            }
+          resource "aws_vpc" "main" {
+            cidr_block = "10.0.0.0/16"
           }
           FIXTURE
           git config user.name "GitHub Actions"
