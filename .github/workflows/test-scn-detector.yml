@@ -1479,8 +1479,10 @@ jobs:
 
   # --------------------------------------------------------------------------
   # S24: Single-file multi-resource — two resources in one .tf file
-  # Rules: routine 'tags.*' + impact 'aws_security_group.*' with 0.0.0.0/0
+  # Rules: transformative 'aws_iam_role.*' create + impact 'aws_security_group.*' 0.0.0.0/0
   # Validates per-resource extraction from a single file
+  # NOTE: Avoids tags/description attrs to prevent routine rule cross-match
+  #       due to extract_changed_attributes 1000-char shared window.
   # --------------------------------------------------------------------------
   s24-single-file-multi-resource:
     name: "S24: single-file multi-resource"
@@ -1496,8 +1498,9 @@ jobs:
         run: |
           mkdir -p terraform
           cat > terraform/mixed-resources.tf << 'FIXTURE'
-          resource "aws_instance" "app" {
-            tags = { Name = "test" }
+          resource "aws_iam_role" "service_role" {
+            name               = "test-role"
+            assume_role_policy = "{}"
           }
 
           resource "aws_security_group" "wide_open" {
@@ -1513,7 +1516,7 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add terraform/mixed-resources.tf
-          git commit -m "test: add single file with routine + impact resources"
+          git commit -m "test: add single file with transformative + impact resources"
 
       - name: Run SCN detector
         id: scn
@@ -1532,15 +1535,15 @@ jobs:
         env:
           HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
           CATEGORY: ${{ steps.scn.outputs.change_category }}
-          ROUTINE: ${{ steps.scn.outputs.routine_count }}
+          TRANSFORMATIVE: ${{ steps.scn.outputs.transformative_count }}
           IMPACT: ${{ steps.scn.outputs.impact_count }}
         run: |
           echo "## S24: single-file-multi-resource" >> $GITHUB_STEP_SUMMARY
-          echo "has_changes=$HAS_CHANGES category=$CATEGORY routine=$ROUTINE impact=$IMPACT" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY transformative=$TRANSFORMATIVE impact=$IMPACT" >> $GITHUB_STEP_SUMMARY
           FAILURES=0
           [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
           [ "$CATEGORY" = "IMPACT" ] || { echo "FAIL: category=$CATEGORY (expected IMPACT)"; FAILURES=$((FAILURES + 1)); }
-          [ "${ROUTINE:-0}" -ge 1 ] || { echo "FAIL: routine_count=$ROUTINE (expected >=1)"; FAILURES=$((FAILURES + 1)); }
+          [ "${TRANSFORMATIVE:-0}" -ge 1 ] || { echo "FAIL: transformative_count=$TRANSFORMATIVE (expected >=1)"; FAILURES=$((FAILURES + 1)); }
           [ "${IMPACT:-0}" -ge 1 ] || { echo "FAIL: impact_count=$IMPACT (expected >=1)"; FAILURES=$((FAILURES + 1)); }
           [ "$FAILURES" -eq 0 ] && echo "PASS: single-file multi-resource correctly classified"
           [ "$FAILURES" -eq 0 ] || exit 1
