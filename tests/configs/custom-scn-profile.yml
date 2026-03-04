@@ -1,0 +1,25 @@
+version: "1.0"
+name: "Custom Test Profile"
+description: |
+  Test profile for S23 that classifies aws_appconfig_application as
+  transformative (unmatched by default fedramp-low profile).
+
+rules:
+  routine:
+    - pattern: 'tags.*'
+      description: 'Tag changes'
+
+  adaptive:
+    - resource: 'aws_instance.*.instance_type'
+      operation: 'modify'
+      description: 'Instance type changes'
+
+  transformative:
+    - resource: 'aws_appconfig_application.*'
+      operation: 'create'
+      description: 'AppConfig application changes (custom rule)'
+
+  impact:
+    - attribute: '.*encryption.*'
+      operation: 'delete|modify'
+      description: 'Encryption changes'

@@ -1,0 +1,1847 @@
+name: "SCN Detector Tests"
+
+on:
+  workflow_dispatch:
+
+  workflow_call:
+    outputs:
+      results:
+        description: "JSON array of individual test results"
+        value: ${{ jobs.validate-results.outputs.results }}
+
+permissions:
+  contents: read
+  actions: read
+
+# ============================================================================
+# SCN Detector tests: validate huntridge-labs/argus scn-detector action
+#
+# Tests S1-S25 cover:
+# - All 4 FedRAMP SCN categories (ROUTINE, ADAPTIVE, TRANSFORMATIVE, IMPACT)
+# - MANUAL_REVIEW detection (unmatched resources)
+# - Multiple IaC formats (Terraform, Kubernetes, CloudFormation)
+# - IaC format detection AND classification for K8s/CFN
+# - fail_on_category enforcement (positive + negative cases)
+# - No-IaC-change detection
+# - Multi-category classification (highest wins)
+# - Dry-run mode (issue payloads without API calls)
+# - Delete operation detection (git rm)
+# - Custom config_file input (profile override)
+# - Single-file multi-resource extraction
+# - AI fallback classification (LLM for unmatched resources)
+#
+# Each test creates IaC fixtures via git commit, then runs the action
+# with base_ref=HEAD~1 and head_ref=HEAD to analyze the diff.
+# ============================================================================
+
+jobs:
+  # --------------------------------------------------------------------------
+  # S1: Routine — tag changes (single commit)
+  # Rule: pattern 'tags.*' matches any operation
+  # --------------------------------------------------------------------------
+  s1-routine-tags:
+    name: "S1: routine tag changes"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p terraform
+          cat > terraform/tags.tf << 'FIXTURE'
+          resource "aws_instance" "web" {
+            instance_type = "t3.small"
+
+            tags = {
+              Name        = "test-server"
+              Environment = "development"
+              ManagedBy   = "e2e-test"
+            }
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/tags.tf
+          git commit -m "test: add instance with tags"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          ROUTINE: ${{ steps.scn.outputs.routine_count }}
+        run: |
+          echo "## S1: routine-tags" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY routine=$ROUTINE" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "ROUTINE" ] || { echo "FAIL: category=$CATEGORY (expected ROUTINE)"; FAILURES=$((FAILURES + 1)); }
+          [ "${ROUTINE:-0}" -ge 1 ] || { echo "FAIL: routine_count=$ROUTINE"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S2: Routine — description change (single commit)
+  # Rule: pattern 'description' matches any operation
+  # --------------------------------------------------------------------------
+  s2-routine-description:
+    name: "S2: routine description"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p terraform
+          cat > terraform/role.tf << 'FIXTURE'
+          resource "aws_iam_role" "app_role" {
+            name        = "app-role"
+            description = "Updated role description for e2e testing"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/role.tf
+          git commit -m "test: add role with description"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          ROUTINE: ${{ steps.scn.outputs.routine_count }}
+        run: |
+          echo "## S2: routine-description" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY routine=$ROUTINE" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "ROUTINE" ] || { echo "FAIL: category=$CATEGORY (expected ROUTINE)"; FAILURES=$((FAILURES + 1)); }
+          [ "${ROUTINE:-0}" -ge 1 ] || { echo "FAIL: routine_count=$ROUTINE"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S3: Adaptive — instance_type modify (2-commit)
+  # Rule: resource 'aws_instance.*.instance_type' operation 'modify'
+  # --------------------------------------------------------------------------
+  s3-adaptive-instance-type:
+    name: "S3: adaptive instance type"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create baseline then modify
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          mkdir -p terraform
+          cat > terraform/instance.tf << 'FIXTURE'
+          resource "aws_instance" "app" {
+            ami           = "ami-12345678"
+            instance_type = "t2.micro"
+          }
+          FIXTURE
+          git add terraform/instance.tf
+          git commit -m "test: baseline instance"
+
+          cat > terraform/instance.tf << 'FIXTURE'
+          resource "aws_instance" "app" {
+            ami           = "ami-12345678"
+            instance_type = "t3.medium"
+          }
+          FIXTURE
+          git add terraform/instance.tf
+          git commit -m "test: change instance type"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          ADAPTIVE: ${{ steps.scn.outputs.adaptive_count }}
+        run: |
+          echo "## S3: adaptive-instance-type" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY adaptive=$ADAPTIVE" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "ADAPTIVE" ] || { echo "FAIL: category=$CATEGORY (expected ADAPTIVE)"; FAILURES=$((FAILURES + 1)); }
+          [ "${ADAPTIVE:-0}" -ge 1 ] || { echo "FAIL: adaptive_count=$ADAPTIVE"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S4: Adaptive — IAM policy attachment create (single commit)
+  # Rule: resource 'aws_iam_policy_attachment.*' operation 'create|delete|modify'
+  # --------------------------------------------------------------------------
+  s4-adaptive-iam-attachment:
+    name: "S4: adaptive IAM attachment"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p terraform
+          cat > terraform/iam-attach.tf << 'FIXTURE'
+          resource "aws_iam_policy_attachment" "app_attach" {
+            name       = "app-policy-attachment"
+            roles      = ["app-role"]
+            policy_arn = "arn:aws:iam::policy/ReadOnlyAccess"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/iam-attach.tf
+          git commit -m "test: add IAM policy attachment"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          ADAPTIVE: ${{ steps.scn.outputs.adaptive_count }}
+        run: |
+          echo "## S4: adaptive-iam-attachment" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY adaptive=$ADAPTIVE" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "ADAPTIVE" ] || { echo "FAIL: category=$CATEGORY (expected ADAPTIVE)"; FAILURES=$((FAILURES + 1)); }
+          [ "${ADAPTIVE:-0}" -ge 1 ] || { echo "FAIL: adaptive_count=$ADAPTIVE"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S5: Transformative — new IAM role create (single commit)
+  # Rule: resource 'aws_iam_role.*' operation 'create'
+  # --------------------------------------------------------------------------
+  s5-transformative-iam-role:
+    name: "S5: transformative IAM role"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p terraform
+          cat > terraform/new-role.tf << 'FIXTURE'
+          resource "aws_iam_role" "new_service_role" {
+            name = "new-service-role"
+
+            assume_role_policy = jsonencode({
+              Version = "2012-10-17"
+              Statement = [{
+                Action    = "sts:AssumeRole"
+                Effect    = "Allow"
+                Principal = { Service = "ec2.amazonaws.com" }
+              }]
+            })
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/new-role.tf
+          git commit -m "test: add new IAM role"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          TRANSFORMATIVE: ${{ steps.scn.outputs.transformative_count }}
+        run: |
+          echo "## S5: transformative-iam-role" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY transformative=$TRANSFORMATIVE" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "TRANSFORMATIVE" ] || { echo "FAIL: category=$CATEGORY (expected TRANSFORMATIVE)"; FAILURES=$((FAILURES + 1)); }
+          [ "${TRANSFORMATIVE:-0}" -ge 1 ] || { echo "FAIL: transformative_count=$TRANSFORMATIVE"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S6: Transformative — DB engine modify (2-commit)
+  # Rule: resource 'aws_rds_.*\.engine' operation 'modify'
+  # --------------------------------------------------------------------------
+  s6-transformative-db-engine:
+    name: "S6: transformative DB engine"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create baseline then modify engine
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          mkdir -p terraform
+          cat > terraform/database.tf << 'FIXTURE'
+          resource "aws_rds_cluster" "main" {
+            cluster_identifier = "main-cluster"
+            engine             = "aurora-mysql"
+            engine_version     = "5.7"
+          }
+          FIXTURE
+          git add terraform/database.tf
+          git commit -m "test: baseline database"
+
+          cat > terraform/database.tf << 'FIXTURE'
+          resource "aws_rds_cluster" "main" {
+            cluster_identifier = "main-cluster"
+            engine             = "aurora-postgresql"
+            engine_version     = "15.2"
+          }
+          FIXTURE
+          git add terraform/database.tf
+          git commit -m "test: change database engine"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          TRANSFORMATIVE: ${{ steps.scn.outputs.transformative_count }}
+        run: |
+          echo "## S6: transformative-db-engine" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY transformative=$TRANSFORMATIVE" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "TRANSFORMATIVE" ] || { echo "FAIL: category=$CATEGORY (expected TRANSFORMATIVE)"; FAILURES=$((FAILURES + 1)); }
+          [ "${TRANSFORMATIVE:-0}" -ge 1 ] || { echo "FAIL: transformative_count=$TRANSFORMATIVE"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S7: Impact — encryption removal (2-commit)
+  # Rule: attribute '.*encryption.*' operation 'delete|modify'
+  # --------------------------------------------------------------------------
+  s7-impact-encryption:
+    name: "S7: impact encryption removal"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create baseline then remove encryption
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          mkdir -p terraform
+          cat > terraform/bucket.tf << 'FIXTURE'
+          resource "aws_s3_bucket" "data" {
+            bucket = "test-data-bucket"
+
+            server_side_encryption_configuration {
+              rule {
+                apply_server_side_encryption_by_default {
+                  sse_algorithm = "aws:kms"
+                }
+              }
+            }
+          }
+          FIXTURE
+          git add terraform/bucket.tf
+          git commit -m "test: baseline bucket with encryption"
+
+          cat > terraform/bucket.tf << 'FIXTURE'
+          resource "aws_s3_bucket" "data" {
+            bucket = "test-data-bucket"
+          }
+          FIXTURE
+          git add terraform/bucket.tf
+          git commit -m "test: remove encryption from bucket"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          IMPACT: ${{ steps.scn.outputs.impact_count }}
+        run: |
+          echo "## S7: impact-encryption-removal" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY impact=$IMPACT" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "IMPACT" ] || { echo "FAIL: category=$CATEGORY (expected IMPACT)"; FAILURES=$((FAILURES + 1)); }
+          [ "${IMPACT:-0}" -ge 1 ] || { echo "FAIL: impact_count=$IMPACT"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S8: Impact — public security group (single commit)
+  # Rule: resource 'aws_security_group.*' attribute 'ingress' pattern '0\.0\.0\.0/0'
+  # --------------------------------------------------------------------------
+  s8-impact-public-sg:
+    name: "S8: impact public security group"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p terraform
+          cat > terraform/security-group.tf << 'FIXTURE'
+          resource "aws_security_group" "public_web" {
+            ingress {
+              cidr_blocks = ["0.0.0.0/0"]
+              from_port   = 443
+              to_port     = 443
+              protocol    = "tcp"
+            }
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/security-group.tf
+          git commit -m "test: add public security group"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          IMPACT: ${{ steps.scn.outputs.impact_count }}
+        run: |
+          echo "## S8: impact-public-sg" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY impact=$IMPACT" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "IMPACT" ] || { echo "FAIL: category=$CATEGORY (expected IMPACT)"; FAILURES=$((FAILURES + 1)); }
+          [ "${IMPACT:-0}" -ge 1 ] || { echo "FAIL: impact_count=$IMPACT"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S9: Impact — IAM user create (single commit)
+  # Rule: resource 'aws_iam_user.*' operation 'create|delete'
+  # (No lower-severity rules match aws_iam_user)
+  # --------------------------------------------------------------------------
+  s9-impact-iam-user:
+    name: "S9: impact IAM user create"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p terraform
+          cat > terraform/iam-user.tf << 'FIXTURE'
+          resource "aws_iam_user" "new_admin" {
+            name = "new-admin-user"
+            path = "/admin/"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/iam-user.tf
+          git commit -m "test: add IAM user"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          IMPACT: ${{ steps.scn.outputs.impact_count }}
+        run: |
+          echo "## S9: impact-iam-user" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY impact=$IMPACT" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "IMPACT" ] || { echo "FAIL: category=$CATEGORY (expected IMPACT)"; FAILURES=$((FAILURES + 1)); }
+          [ "${IMPACT:-0}" -ge 1 ] || { echo "FAIL: impact_count=$IMPACT"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S10: Kubernetes manifest detection (single commit)
+  # Validates K8s YAML with kind/apiVersion is detected as IaC
+  # --------------------------------------------------------------------------
+  s10-kubernetes-detection:
+    name: "S10: kubernetes detection"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p k8s
+          cat > k8s/deployment.yaml << 'FIXTURE'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nginx-test
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: nginx
+            template:
+              metadata:
+                labels:
+                  app: nginx
+              spec:
+                containers:
+                - name: nginx
+                  image: nginx:1.25
+                  ports:
+                  - containerPort: 80
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add k8s/deployment.yaml
+          git commit -m "test: add kubernetes deployment"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+        run: |
+          echo "## S10: kubernetes-detection" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES (K8s file not detected)"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: K8s file detected as IaC"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S11: CloudFormation template detection (single commit)
+  # Validates CFN YAML with AWSTemplateFormatVersion is detected as IaC
+  # --------------------------------------------------------------------------
+  s11-cloudformation-detection:
+    name: "S11: cloudformation detection"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p cloudformation
+          cat > cloudformation/template.yaml << 'FIXTURE'
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: Test CloudFormation template
+          Resources:
+            TestBucket:
+              Type: AWS::S3::Bucket
+              Properties:
+                BucketName: test-cfn-bucket
+                Tags:
+                  - Key: Environment
+                    Value: test
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add cloudformation/template.yaml
+          git commit -m "test: add cloudformation template"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+        run: |
+          echo "## S11: cloudformation-detection" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES (CFN file not detected)"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: CloudFormation file detected as IaC"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S12: No IaC changes — non-IaC file only (single commit)
+  # Validates has_changes=false when only non-IaC files change
+  # --------------------------------------------------------------------------
+  s12-no-iac-changes:
+    name: "S12: no IaC changes"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create non-IaC change
+        run: |
+          mkdir -p docs
+          echo "This is not an IaC file" > docs/test-note.txt
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add docs/test-note.txt
+          git commit -m "test: add non-IaC file"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+        run: |
+          echo "## S12: no-iac-changes" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "false" ] || { echo "FAIL: has_changes=$HAS_CHANGES (expected false)"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "NONE" ] || { echo "FAIL: category=$CATEGORY (expected NONE)"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: no IaC changes correctly detected"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S13: fail_on_category=impact (single commit, expect failure)
+  # Uses same fixture as S8 (public security group = IMPACT)
+  # --------------------------------------------------------------------------
+  s13-fail-on-impact:
+    name: "S13: fail on impact"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create impact IaC change
+        run: |
+          mkdir -p terraform
+          cat > terraform/security-group.tf << 'FIXTURE'
+          resource "aws_security_group" "public_web" {
+            ingress {
+              cidr_blocks = ["0.0.0.0/0"]
+              from_port   = 443
+              to_port     = 443
+              protocol    = "tcp"
+            }
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/security-group.tf
+          git commit -m "test: add public security group for fail test"
+
+      - name: Run SCN detector (expect failure)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'impact'
+
+      - name: Verify step failed
+        env:
+          OUTCOME: ${{ steps.scn.outcome }}
+        run: |
+          echo "## S13: fail-on-impact" >> $GITHUB_STEP_SUMMARY
+          echo "outcome=$OUTCOME" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$OUTCOME" = "failure" ] || { echo "FAIL: outcome=$OUTCOME (expected failure)"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: fail_on_category=impact correctly triggered failure"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S14: fail_on_category=adaptive (single commit, expect failure)
+  # Uses same fixture as S4 (IAM policy attachment = ADAPTIVE)
+  # --------------------------------------------------------------------------
+  s14-fail-on-adaptive:
+    name: "S14: fail on adaptive"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create adaptive IaC change
+        run: |
+          mkdir -p terraform
+          cat > terraform/iam-attach.tf << 'FIXTURE'
+          resource "aws_iam_policy_attachment" "app_attach" {
+            name       = "app-policy-attachment"
+            roles      = ["app-role"]
+            policy_arn = "arn:aws:iam::policy/ReadOnlyAccess"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/iam-attach.tf
+          git commit -m "test: add IAM attachment for fail test"
+
+      - name: Run SCN detector (expect failure)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'adaptive'
+
+      - name: Verify step failed
+        env:
+          OUTCOME: ${{ steps.scn.outcome }}
+        run: |
+          echo "## S14: fail-on-adaptive" >> $GITHUB_STEP_SUMMARY
+          echo "outcome=$OUTCOME" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$OUTCOME" = "failure" ] || { echo "FAIL: outcome=$OUTCOME (expected failure)"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: fail_on_category=adaptive correctly triggered failure"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S15: Mixed multi-category — highest wins (single commit, multi-file)
+  # Creates routine (tags) + impact (public SG) files, expects IMPACT as highest
+  # --------------------------------------------------------------------------
+  s15-mixed-multi-category:
+    name: "S15: mixed multi-category"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create mixed IaC changes
+        run: |
+          mkdir -p terraform
+          cat > terraform/tags.tf << 'FIXTURE'
+          resource "aws_instance" "web" {
+            instance_type = "t3.small"
+
+            tags = {
+              Name = "mixed-test"
+            }
+          }
+          FIXTURE
+
+          cat > terraform/security-group.tf << 'FIXTURE'
+          resource "aws_security_group" "public" {
+            ingress {
+              cidr_blocks = ["0.0.0.0/0"]
+              from_port   = 80
+              to_port     = 80
+              protocol    = "tcp"
+            }
+          }
+          FIXTURE
+
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/tags.tf terraform/security-group.tf
+          git commit -m "test: add mixed routine + impact changes"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          ROUTINE: ${{ steps.scn.outputs.routine_count }}
+          IMPACT: ${{ steps.scn.outputs.impact_count }}
+        run: |
+          echo "## S15: mixed-multi-category" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY routine=$ROUTINE impact=$IMPACT" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "IMPACT" ] || { echo "FAIL: category=$CATEGORY (expected IMPACT)"; FAILURES=$((FAILURES + 1)); }
+          [ "${ROUTINE:-0}" -ge 1 ] || { echo "FAIL: routine_count=$ROUTINE (expected >=1)"; FAILURES=$((FAILURES + 1)); }
+          [ "${IMPACT:-0}" -ge 1 ] || { echo "FAIL: impact_count=$IMPACT (expected >=1)"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S16: Dry-run mode — issue payloads generated without API calls
+  # Uses same fixture as S4 (ADAPTIVE), with dry_run=true and create_issues=true
+  # --------------------------------------------------------------------------
+  s16-dry-run-issues:
+    name: "S16: dry-run issue creation"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test IaC changes
+        run: |
+          mkdir -p terraform
+          cat > terraform/iam-attach.tf << 'FIXTURE'
+          resource "aws_iam_policy_attachment" "app_attach" {
+            name       = "app-policy-attachment"
+            roles      = ["app-role"]
+            policy_arn = "arn:aws:iam::policy/ReadOnlyAccess"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/iam-attach.tf
+          git commit -m "test: add IAM attachment for dry-run test"
+
+      - name: Run SCN detector (dry-run)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: true
+          post_pr_comment: true
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+          dry_run: true
+
+      - name: Verify dry-run outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+        run: |
+          echo "## S16: dry-run-issues" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+
+          # Should still detect changes
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "ADAPTIVE" ] || { echo "FAIL: category=$CATEGORY (expected ADAPTIVE)"; FAILURES=$((FAILURES + 1)); }
+
+          # Dry-run JSON should exist with correct structure
+          if [ -f scn-reports/dry-run-issues.json ]; then
+            echo "dry-run-issues.json found"
+            TOTAL=$(python3 -c "import json; d=json.load(open('scn-reports/dry-run-issues.json')); print(d['total'])")
+            IS_DRY_RUN=$(python3 -c "import json; d=json.load(open('scn-reports/dry-run-issues.json')); print(d['dry_run'])")
+            [ "$IS_DRY_RUN" = "True" ] || { echo "FAIL: dry_run flag not set"; FAILURES=$((FAILURES + 1)); }
+            [ "$TOTAL" -ge 1 ] || { echo "FAIL: total=$TOTAL (expected >=1)"; FAILURES=$((FAILURES + 1)); }
+          else
+            echo "FAIL: scn-reports/dry-run-issues.json not found"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          # PR comment report should exist (written by report generator)
+          [ -f scn-summaries/scn-report.md ] || { echo "FAIL: scn-report.md not found"; FAILURES=$((FAILURES + 1)); }
+
+          [ "$FAILURES" -eq 0 ] && echo "PASS: all dry-run assertions met"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S17: MANUAL_REVIEW — unmatched resource triggers manual review
+  # Uses a Terraform resource that doesn't match any rule in the default profile
+  # --------------------------------------------------------------------------
+  s17-manual-review:
+    name: "S17: manual review detection"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create unmatched IaC change
+        run: |
+          mkdir -p terraform
+          cat > terraform/appconfig.tf << 'FIXTURE'
+          resource "aws_appconfig_application" "flags" {
+            name = "feature-flags-app"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/appconfig.tf
+          git commit -m "test: add unmatched resource for manual review"
+
+      - name: Run SCN detector (dry-run)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: true
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+          dry_run: true
+
+      - name: Verify manual review classification
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          MANUAL_REVIEW: ${{ steps.scn.outputs.manual_review_count }}
+        run: |
+          echo "## S17: manual-review" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY manual_review=$MANUAL_REVIEW" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "${MANUAL_REVIEW:-0}" -ge 1 ] || { echo "FAIL: manual_review_count=$MANUAL_REVIEW (expected >=1)"; FAILURES=$((FAILURES + 1)); }
+
+          # Dry-run JSON should NOT contain MANUAL_REVIEW issues (not merging to default branch)
+          if [ -f scn-reports/dry-run-issues.json ]; then
+            MR_COUNT=$(python3 -c "
+          import json
+          d = json.load(open('scn-reports/dry-run-issues.json'))
+          mr = [i for i in d.get('issues', []) if i.get('category') == 'MANUAL_REVIEW']
+          print(len(mr))
+          ")
+            [ "$MR_COUNT" -eq 0 ] || { echo "FAIL: MANUAL_REVIEW issues=$MR_COUNT (expected 0 — not merging to default)"; FAILURES=$((FAILURES + 1)); }
+          fi
+
+          [ "$FAILURES" -eq 0 ] && echo "PASS: manual review correctly detected"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S18: fail_on_category=transformative positive (expect failure)
+  # Rule: resource 'aws_bedrock.*' operation 'create' → TRANSFORMATIVE
+  # Validates cascade: transformative threshold blocks TRANSFORMATIVE + IMPACT
+  # --------------------------------------------------------------------------
+  s18-fail-on-transformative:
+    name: "S18: fail on transformative"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create transformative IaC change
+        run: |
+          mkdir -p terraform
+          cat > terraform/bedrock.tf << 'FIXTURE'
+          resource "aws_bedrock_custom_model" "assistant" {
+            custom_model_name  = "compliance-assistant"
+            base_model_identifier = "anthropic.claude-3-haiku"
+            role_arn           = "arn:aws:iam::role/BedrockRole"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/bedrock.tf
+          git commit -m "test: add bedrock model for fail-on-transformative test"
+
+      - name: Run SCN detector (expect failure)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'transformative'
+
+      - name: Verify step failed
+        env:
+          OUTCOME: ${{ steps.scn.outcome }}
+        run: |
+          echo "## S18: fail-on-transformative" >> $GITHUB_STEP_SUMMARY
+          echo "outcome=$OUTCOME" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$OUTCOME" = "failure" ] || { echo "FAIL: outcome=$OUTCOME (expected failure)"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: fail_on_category=transformative correctly triggered failure"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S19: fail_on_category negative — ROUTINE below adaptive threshold
+  # Rule: pattern 'tags.*' → ROUTINE (should NOT trigger adaptive threshold)
+  # --------------------------------------------------------------------------
+  s19-fail-on-category-pass:
+    name: "S19: fail_on_category pass (below threshold)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create routine IaC change
+        run: |
+          mkdir -p terraform
+          cat > terraform/tags-only.tf << 'FIXTURE'
+          resource "aws_instance" "web" {
+            instance_type = "t3.micro"
+
+            tags = {
+              Name = "threshold-test"
+              Team = "platform"
+            }
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/tags-only.tf
+          git commit -m "test: add routine tags for fail-on-category pass test"
+
+      - name: Run SCN detector (should pass)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'adaptive'
+
+      - name: Verify step passed
+        env:
+          OUTCOME: ${{ steps.scn.outcome }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+        run: |
+          echo "## S19: fail-on-category-pass" >> $GITHUB_STEP_SUMMARY
+          echo "outcome=$OUTCOME category=$CATEGORY" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$OUTCOME" = "success" ] || { echo "FAIL: outcome=$OUTCOME (expected success)"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "ROUTINE" ] || { echo "FAIL: category=$CATEGORY (expected ROUTINE)"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: fail_on_category=adaptive did not trigger on ROUTINE"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S20: Delete operation — KMS key removal (2-commit: add then git rm)
+  # Rule: resource 'aws_kms_key.*' operation 'delete'
+  # --------------------------------------------------------------------------
+  s20-delete-operation:
+    name: "S20: delete operation (KMS key)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create baseline then delete
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          mkdir -p terraform
+          cat > terraform/kms-key.tf << 'FIXTURE'
+          resource "aws_kms_key" "data_encryption" {
+            deletion_window_in_days = 30
+            enable_key_rotation     = true
+          }
+          FIXTURE
+          git add terraform/kms-key.tf
+          git commit -m "test: baseline KMS key"
+
+          git rm terraform/kms-key.tf
+          git commit -m "test: delete KMS key"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          IMPACT: ${{ steps.scn.outputs.impact_count }}
+        run: |
+          echo "## S20: delete-operation" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY impact=$IMPACT" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "IMPACT" ] || { echo "FAIL: category=$CATEGORY (expected IMPACT)"; FAILURES=$((FAILURES + 1)); }
+          [ "${IMPACT:-0}" -ge 1 ] || { echo "FAIL: impact_count=$IMPACT"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: delete operation correctly classified"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S21: K8s classification — version annotation (2-commit modify)
+  # Rule: pattern 'kubernetes.io/.*version' → ADAPTIVE
+  # --------------------------------------------------------------------------
+  s21-k8s-classification:
+    name: "S21: kubernetes classification"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create baseline then update version
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          mkdir -p k8s
+          cat > k8s/versioned-deploy.yaml << 'FIXTURE'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: api-server
+            labels:
+              app.kubernetes.io/version: "1.0.0"
+          spec:
+            replicas: 3
+            template:
+              spec:
+                containers:
+                - name: api
+                  image: api-server:1.0.0
+          FIXTURE
+          git add k8s/versioned-deploy.yaml
+          git commit -m "test: baseline K8s deployment"
+
+          cat > k8s/versioned-deploy.yaml << 'FIXTURE'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: api-server
+            labels:
+              app.kubernetes.io/version: "2.1.0"
+          spec:
+            replicas: 3
+            template:
+              spec:
+                containers:
+                - name: api
+                  image: api-server:2.1.0
+          FIXTURE
+          git add k8s/versioned-deploy.yaml
+          git commit -m "test: update K8s version annotation"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          ADAPTIVE: ${{ steps.scn.outputs.adaptive_count }}
+        run: |
+          echo "## S21: k8s-classification" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY adaptive=$ADAPTIVE" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "ADAPTIVE" ] || { echo "FAIL: category=$CATEGORY (expected ADAPTIVE)"; FAILURES=$((FAILURES + 1)); }
+          [ "${ADAPTIVE:-0}" -ge 1 ] || { echo "FAIL: adaptive_count=$ADAPTIVE"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: K8s version annotation correctly classified"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S22: CFN classification — tags on S3 bucket (single commit)
+  # Rule: pattern 'tags.*' → ROUTINE
+  # --------------------------------------------------------------------------
+  s22-cfn-classification:
+    name: "S22: cloudformation classification"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create CFN template with tags
+        run: |
+          mkdir -p cloudformation
+          cat > cloudformation/tagged-bucket.yaml << 'FIXTURE'
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: S3 bucket with tags for classification test
+          Resources:
+            DataBucket:
+              Type: AWS::S3::Bucket
+              Properties:
+                BucketName: scn-test-tagged-bucket
+                Tags:
+                  - Key: Environment
+                    Value: staging
+                  - Key: CostCenter
+                    Value: engineering
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add cloudformation/tagged-bucket.yaml
+          git commit -m "test: add CFN template with tags"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          ROUTINE: ${{ steps.scn.outputs.routine_count }}
+        run: |
+          echo "## S22: cfn-classification" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY routine=$ROUTINE" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "ROUTINE" ] || { echo "FAIL: category=$CATEGORY (expected ROUTINE)"; FAILURES=$((FAILURES + 1)); }
+          [ "${ROUTINE:-0}" -ge 1 ] || { echo "FAIL: routine_count=$ROUTINE"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: CFN tags correctly classified as ROUTINE"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S23: Custom config_file — overrides default profile
+  # Uses custom profile that classifies aws_appconfig_application as TRANSFORMATIVE
+  # (same resource is MANUAL_REVIEW with default profile in S17)
+  # --------------------------------------------------------------------------
+  s23-custom-config:
+    name: "S23: custom config_file"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create IaC change (uses custom profile rule)
+        run: |
+          mkdir -p terraform
+          cat > terraform/appconfig-custom.tf << 'FIXTURE'
+          resource "aws_appconfig_application" "feature_flags" {
+            name = "feature-flags-custom-profile"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/appconfig-custom.tf
+          git commit -m "test: add appconfig for custom profile test"
+
+      - name: Run SCN detector (custom profile)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          config_file: 'tests/configs/custom-scn-profile.yml'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          TRANSFORMATIVE: ${{ steps.scn.outputs.transformative_count }}
+        run: |
+          echo "## S23: custom-config" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY transformative=$TRANSFORMATIVE" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "TRANSFORMATIVE" ] || { echo "FAIL: category=$CATEGORY (expected TRANSFORMATIVE)"; FAILURES=$((FAILURES + 1)); }
+          [ "${TRANSFORMATIVE:-0}" -ge 1 ] || { echo "FAIL: transformative_count=$TRANSFORMATIVE"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: custom config_file correctly classified"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S24: Single-file multi-resource — two resources in one .tf file
+  # Rules: transformative 'aws_iam_role.*' create + impact 'aws_vpc.*' create
+  # Validates per-resource extraction from a single file.
+  # Uses aws_vpc (simple resource+operation impact rule) to avoid attribute/
+  # pattern matching issues with the shared 1000-char extraction window.
+  # --------------------------------------------------------------------------
+  s24-single-file-multi-resource:
+    name: "S24: single-file multi-resource"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create single file with multiple resources
+        run: |
+          mkdir -p terraform
+          cat > terraform/mixed-resources.tf << 'FIXTURE'
+          resource "aws_iam_role" "service_role" {
+            name               = "test-role"
+            assume_role_policy = "{}"
+          }
+
+          resource "aws_vpc" "main" {
+            cidr_block = "10.0.0.0/16"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/mixed-resources.tf
+          git commit -m "test: add single file with transformative + impact resources"
+
+      - name: Run SCN detector
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: false
+          fail_on_category: 'none'
+
+      - name: Verify outputs
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          TRANSFORMATIVE: ${{ steps.scn.outputs.transformative_count }}
+          IMPACT: ${{ steps.scn.outputs.impact_count }}
+        run: |
+          echo "## S24: single-file-multi-resource" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY transformative=$TRANSFORMATIVE impact=$IMPACT" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "$CATEGORY" = "IMPACT" ] || { echo "FAIL: category=$CATEGORY (expected IMPACT)"; FAILURES=$((FAILURES + 1)); }
+          [ "${TRANSFORMATIVE:-0}" -ge 1 ] || { echo "FAIL: transformative_count=$TRANSFORMATIVE (expected >=1)"; FAILURES=$((FAILURES + 1)); }
+          [ "${IMPACT:-0}" -ge 1 ] || { echo "FAIL: impact_count=$IMPACT (expected >=1)"; FAILURES=$((FAILURES + 1)); }
+          [ "$FAILURES" -eq 0 ] && echo "PASS: single-file multi-resource correctly classified"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # --------------------------------------------------------------------------
+  # S25: AI fallback — unmatched resource classified by LLM
+  # Uses same unmatched resource as S17 (aws_appconfig_application) but with
+  # enable_ai_fallback=true. AI should classify it into a real FedRAMP
+  # category instead of MANUAL_REVIEW.
+  # --------------------------------------------------------------------------
+  s25-ai-fallback:
+    name: "S25: AI fallback classification"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create unmatched IaC resource
+        run: |
+          mkdir -p terraform
+          cat > terraform/appconfig-ai.tf << 'FIXTURE'
+          resource "aws_appconfig_application" "ai_classified" {
+            name = "feature-flags-ai-test"
+          }
+          FIXTURE
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add terraform/appconfig-ai.tf
+          git commit -m "test: add unmatched resource for AI fallback classification"
+
+      - name: Run SCN detector (AI fallback enabled)
+        id: scn
+        uses: huntridge-labs/argus/.github/actions/scn-detector@0.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          base_ref: 'HEAD~1'
+          head_ref: 'HEAD'
+          create_issues: false
+          post_pr_comment: false
+          enable_ai_fallback: true
+          fail_on_category: 'none'
+
+      - name: Verify AI classified (not MANUAL_REVIEW)
+        env:
+          HAS_CHANGES: ${{ steps.scn.outputs.has_changes }}
+          CATEGORY: ${{ steps.scn.outputs.change_category }}
+          MANUAL_REVIEW: ${{ steps.scn.outputs.manual_review_count }}
+        run: |
+          echo "## S25: ai-fallback" >> $GITHUB_STEP_SUMMARY
+          echo "has_changes=$HAS_CHANGES category=$CATEGORY manual_review=$MANUAL_REVIEW" >> $GITHUB_STEP_SUMMARY
+          FAILURES=0
+          [ "$HAS_CHANGES" = "true" ] || { echo "FAIL: has_changes=$HAS_CHANGES"; FAILURES=$((FAILURES + 1)); }
+          [ "${MANUAL_REVIEW:-0}" -eq 0 ] || { echo "FAIL: manual_review_count=$MANUAL_REVIEW (expected 0 — AI should classify)"; FAILURES=$((FAILURES + 1)); }
+          case "$CATEGORY" in
+            ROUTINE|ADAPTIVE|TRANSFORMATIVE|IMPACT)
+              echo "AI classified as $CATEGORY"
+              ;;
+            *)
+              echo "FAIL: category=$CATEGORY (expected one of ROUTINE/ADAPTIVE/TRANSFORMATIVE/IMPACT)"
+              FAILURES=$((FAILURES + 1))
+              ;;
+          esac
+
+          # Verify classification JSON proves AI was actually invoked
+          if [ -f scn-reports/scn-classifications.json ]; then
+            METHOD=$(jq -r '.classifications[0].method' scn-reports/scn-classifications.json)
+            AI_MODEL=$(jq -r '.classifications[0].ai_model // empty' scn-reports/scn-classifications.json)
+            CONFIDENCE=$(jq -r '.classifications[0].confidence // 0' scn-reports/scn-classifications.json)
+            REASONING=$(jq -r '.classifications[0].reasoning // empty' scn-reports/scn-classifications.json)
+            AI_ENABLED=$(jq -r '.ai_enabled' scn-reports/scn-classifications.json)
+
+            echo "method=$METHOD ai_model=$AI_MODEL confidence=$CONFIDENCE ai_enabled=$AI_ENABLED" >> $GITHUB_STEP_SUMMARY
+            echo "reasoning=$REASONING" >> $GITHUB_STEP_SUMMARY
+
+            [ "$METHOD" = "ai-fallback" ] || { echo "FAIL: method=$METHOD (expected ai-fallback)"; FAILURES=$((FAILURES + 1)); }
+            [ -n "$AI_MODEL" ] || { echo "FAIL: ai_model is empty (expected model identifier)"; FAILURES=$((FAILURES + 1)); }
+            [ "$AI_ENABLED" = "true" ] || { echo "FAIL: ai_enabled=$AI_ENABLED (expected true)"; FAILURES=$((FAILURES + 1)); }
+          else
+            echo "FAIL: scn-classifications.json not found"
+            FAILURES=$((FAILURES + 1))
+          fi
+
+          [ "$FAILURES" -eq 0 ] && echo "PASS: AI fallback correctly classified unmatched resource"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # ==========================================================================
+  # Validate results + build JSON output for dashboard
+  # ==========================================================================
+  validate-results:
+    name: "Validate SCN results"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - s1-routine-tags
+      - s2-routine-description
+      - s3-adaptive-instance-type
+      - s4-adaptive-iam-attachment
+      - s5-transformative-iam-role
+      - s6-transformative-db-engine
+      - s7-impact-encryption
+      - s8-impact-public-sg
+      - s9-impact-iam-user
+      - s10-kubernetes-detection
+      - s11-cloudformation-detection
+      - s12-no-iac-changes
+      - s13-fail-on-impact
+      - s14-fail-on-adaptive
+      - s15-mixed-multi-category
+      - s16-dry-run-issues
+      - s17-manual-review
+      - s18-fail-on-transformative
+      - s19-fail-on-category-pass
+      - s20-delete-operation
+      - s21-k8s-classification
+      - s22-cfn-classification
+      - s23-custom-config
+      - s24-single-file-multi-resource
+      - s25-ai-fallback
+    if: always()
+    outputs:
+      results: ${{ steps.collect.outputs.results }}
+    steps:
+      - name: Validate test outcomes
+        env:
+          S1: ${{ needs.s1-routine-tags.result }}
+          S2: ${{ needs.s2-routine-description.result }}
+          S3: ${{ needs.s3-adaptive-instance-type.result }}
+          S4: ${{ needs.s4-adaptive-iam-attachment.result }}
+          S5: ${{ needs.s5-transformative-iam-role.result }}
+          S6: ${{ needs.s6-transformative-db-engine.result }}
+          S7: ${{ needs.s7-impact-encryption.result }}
+          S8: ${{ needs.s8-impact-public-sg.result }}
+          S9: ${{ needs.s9-impact-iam-user.result }}
+          S10: ${{ needs.s10-kubernetes-detection.result }}
+          S11: ${{ needs.s11-cloudformation-detection.result }}
+          S12: ${{ needs.s12-no-iac-changes.result }}
+          S13: ${{ needs.s13-fail-on-impact.result }}
+          S14: ${{ needs.s14-fail-on-adaptive.result }}
+          S15: ${{ needs.s15-mixed-multi-category.result }}
+          S16: ${{ needs.s16-dry-run-issues.result }}
+          S17: ${{ needs.s17-manual-review.result }}
+          S18: ${{ needs.s18-fail-on-transformative.result }}
+          S19: ${{ needs.s19-fail-on-category-pass.result }}
+          S20: ${{ needs.s20-delete-operation.result }}
+          S21: ${{ needs.s21-k8s-classification.result }}
+          S22: ${{ needs.s22-cfn-classification.result }}
+          S23: ${{ needs.s23-custom-config.result }}
+          S24: ${{ needs.s24-single-file-multi-resource.result }}
+          S25: ${{ needs.s25-ai-fallback.result }}
+        run: |
+          FAILURES=0
+
+          check() {
+            local name="$1" got="$2" expected="$3"
+            if [ "$got" = "$expected" ]; then
+              echo "PASS $name: $got (expected $expected)"
+            else
+              echo "FAIL $name: $got (expected $expected)"
+              FAILURES=$((FAILURES + 1))
+            fi
+          }
+
+          echo "============================================"
+          echo "SCN Detector Test Validation"
+          echo "============================================"
+          echo ""
+
+          check "S1  routine-tags" "$S1" "success"
+          check "S2  routine-description" "$S2" "success"
+          check "S3  adaptive-instance-type" "$S3" "success"
+          check "S4  adaptive-iam-attachment" "$S4" "success"
+          check "S5  transformative-iam-role" "$S5" "success"
+          check "S6  transformative-db-engine" "$S6" "success"
+          check "S7  impact-encryption" "$S7" "success"
+          check "S8  impact-public-sg" "$S8" "success"
+          check "S9  impact-iam-user" "$S9" "success"
+          check "S10 kubernetes-detection" "$S10" "success"
+          check "S11 cloudformation-detection" "$S11" "success"
+          check "S12 no-iac-changes" "$S12" "success"
+          check "S13 fail-on-impact" "$S13" "success"
+          check "S14 fail-on-adaptive" "$S14" "success"
+          check "S15 mixed-multi-category" "$S15" "success"
+          check "S16 dry-run-issues" "$S16" "success"
+          check "S17 manual-review" "$S17" "success"
+          check "S18 fail-on-transformative" "$S18" "success"
+          check "S19 fail-on-category-pass" "$S19" "success"
+          check "S20 delete-operation" "$S20" "success"
+          check "S21 k8s-classification" "$S21" "success"
+          check "S22 cfn-classification" "$S22" "success"
+          check "S23 custom-config" "$S23" "success"
+          check "S24 single-file-multi-resource" "$S24" "success"
+          check "S25 ai-fallback" "$S25" "success"
+
+          echo ""
+          echo "============================================"
+          TOTAL=25
+          PASSED=$((TOTAL - FAILURES))
+          echo "Results: $PASSED/$TOTAL passed"
+          echo "============================================"
+
+          if [ "$FAILURES" -gt 0 ]; then
+            echo "::error::$FAILURES SCN detector test(s) did not produce expected outcome"
+            exit 1
+          fi
+
+      - name: Build results JSON
+        id: collect
+        if: always()
+        env:
+          S1: ${{ needs.s1-routine-tags.result }}
+          S2: ${{ needs.s2-routine-description.result }}
+          S3: ${{ needs.s3-adaptive-instance-type.result }}
+          S4: ${{ needs.s4-adaptive-iam-attachment.result }}
+          S5: ${{ needs.s5-transformative-iam-role.result }}
+          S6: ${{ needs.s6-transformative-db-engine.result }}
+          S7: ${{ needs.s7-impact-encryption.result }}
+          S8: ${{ needs.s8-impact-public-sg.result }}
+          S9: ${{ needs.s9-impact-iam-user.result }}
+          S10: ${{ needs.s10-kubernetes-detection.result }}
+          S11: ${{ needs.s11-cloudformation-detection.result }}
+          S12: ${{ needs.s12-no-iac-changes.result }}
+          S13: ${{ needs.s13-fail-on-impact.result }}
+          S14: ${{ needs.s14-fail-on-adaptive.result }}
+          S15: ${{ needs.s15-mixed-multi-category.result }}
+          S16: ${{ needs.s16-dry-run-issues.result }}
+          S17: ${{ needs.s17-manual-review.result }}
+          S18: ${{ needs.s18-fail-on-transformative.result }}
+          S19: ${{ needs.s19-fail-on-category-pass.result }}
+          S20: ${{ needs.s20-delete-operation.result }}
+          S21: ${{ needs.s21-k8s-classification.result }}
+          S22: ${{ needs.s22-cfn-classification.result }}
+          S23: ${{ needs.s23-custom-config.result }}
+          S24: ${{ needs.s24-single-file-multi-resource.result }}
+          S25: ${{ needs.s25-ai-fallback.result }}
+        run: |
+          to_status() {
+            local got="$1" expected="$2"
+            case "$got" in
+              skipped) echo "skip" ;;
+              cancelled) echo "cancel" ;;
+              *)
+                if [ "$got" = "$expected" ]; then
+                  echo "pass"
+                else
+                  echo "FAIL"
+                fi
+                ;;
+            esac
+          }
+
+          RESULTS=$(jq -n -c \
+            --arg s1 "$(to_status "$S1" success)" \
+            --arg s2 "$(to_status "$S2" success)" \
+            --arg s3 "$(to_status "$S3" success)" \
+            --arg s4 "$(to_status "$S4" success)" \
+            --arg s5 "$(to_status "$S5" success)" \
+            --arg s6 "$(to_status "$S6" success)" \
+            --arg s7 "$(to_status "$S7" success)" \
+            --arg s8 "$(to_status "$S8" success)" \
+            --arg s9 "$(to_status "$S9" success)" \
+            --arg s10 "$(to_status "$S10" success)" \
+            --arg s11 "$(to_status "$S11" success)" \
+            --arg s12 "$(to_status "$S12" success)" \
+            --arg s13 "$(to_status "$S13" success)" \
+            --arg s14 "$(to_status "$S14" success)" \
+            --arg s15 "$(to_status "$S15" success)" \
+            --arg s16 "$(to_status "$S16" success)" \
+            --arg s17 "$(to_status "$S17" success)" \
+            --arg s18 "$(to_status "$S18" success)" \
+            --arg s19 "$(to_status "$S19" success)" \
+            --arg s20 "$(to_status "$S20" success)" \
+            --arg s21 "$(to_status "$S21" success)" \
+            --arg s22 "$(to_status "$S22" success)" \
+            --arg s23 "$(to_status "$S23" success)" \
+            --arg s24 "$(to_status "$S24" success)" \
+            --arg s25 "$(to_status "$S25" success)" \
+            '[
+              {"id":"S1","name":"routine tags","detail":"Terraform tags.* pattern — ROUTINE classification","status":$s1},
+              {"id":"S2","name":"routine description","detail":"Terraform description pattern — ROUTINE classification","status":$s2},
+              {"id":"S3","name":"adaptive instance type","detail":"aws_instance instance_type modify — ADAPTIVE classification","status":$s3},
+              {"id":"S4","name":"adaptive IAM attachment","detail":"aws_iam_policy_attachment create — ADAPTIVE classification","status":$s4},
+              {"id":"S5","name":"transformative IAM role","detail":"aws_iam_role create — TRANSFORMATIVE classification","status":$s5},
+              {"id":"S6","name":"transformative DB engine","detail":"aws_rds_cluster engine modify — TRANSFORMATIVE classification","status":$s6},
+              {"id":"S7","name":"impact encryption","detail":"S3 encryption removal — IMPACT classification","status":$s7},
+              {"id":"S8","name":"impact public SG","detail":"Security group 0.0.0.0/0 ingress — IMPACT classification","status":$s8},
+              {"id":"S9","name":"impact IAM user","detail":"aws_iam_user create — IMPACT classification","status":$s9},
+              {"id":"S10","name":"kubernetes detection","detail":"K8s Deployment YAML — IaC format detection","status":$s10},
+              {"id":"S11","name":"cloudformation detection","detail":"CFN template YAML — IaC format detection","status":$s11},
+              {"id":"S12","name":"no IaC changes","detail":"Non-IaC file — has_changes=false","status":$s12},
+              {"id":"S13","name":"fail on impact","detail":"fail_on_category=impact — enforcement","status":$s13},
+              {"id":"S14","name":"fail on adaptive","detail":"fail_on_category=adaptive — enforcement","status":$s14},
+              {"id":"S15","name":"mixed multi-category","detail":"Routine + Impact files — highest category wins","status":$s15},
+              {"id":"S16","name":"dry-run issues","detail":"Dry-run mode — issue payloads without API calls","status":$s16},
+              {"id":"S17","name":"manual review","detail":"Unmatched resource — MANUAL_REVIEW classification","status":$s17},
+              {"id":"S18","name":"fail on transformative","detail":"fail_on_category=transformative — enforcement","status":$s18},
+              {"id":"S19","name":"fail on category pass","detail":"fail_on_category=adaptive with ROUTINE — no failure","status":$s19},
+              {"id":"S20","name":"delete operation","detail":"aws_kms_key file deletion — IMPACT classification","status":$s20},
+              {"id":"S21","name":"k8s classification","detail":"K8s version annotation — ADAPTIVE classification","status":$s21},
+              {"id":"S22","name":"cfn classification","detail":"CFN S3 bucket tags — ROUTINE classification","status":$s22},
+              {"id":"S23","name":"custom config","detail":"Custom config_file — overrides default profile","status":$s23},
+              {"id":"S24","name":"single-file multi-resource","detail":"Two resources in one .tf — per-resource extraction","status":$s24},
+              {"id":"S25","name":"AI fallback","detail":"Unmatched resource — AI classification instead of MANUAL_REVIEW","status":$s25}
+            ]')
+          echo "results=$RESULTS" >> "$GITHUB_OUTPUT"

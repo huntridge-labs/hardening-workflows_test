@@ -35,7 +35,7 @@ jobs:
   # C1: trivy+syft pair (never tested together)
   c1-trivy-syft:
     name: "C1: trivy+syft pair"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -47,7 +47,7 @@ jobs:
   # C2: grype+syft pair (never tested together)
   c2-grype-syft:
     name: "C2: grype+syft pair"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -63,7 +63,7 @@ jobs:
   # C3: medium threshold on vulnerable image (medium severity never tested)
   c3-medium-vuln:
     name: "C3: medium threshold on vuln"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -75,7 +75,7 @@ jobs:
   # C4: high threshold standalone (R8 masks with allow_failure=true)
   c4-high-vuln:
     name: "C4: high threshold on vuln"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -87,7 +87,7 @@ jobs:
   # C5: grype + critical threshold (grype never threshold-tested)
   c5-grype-critical:
     name: "C5: grype + critical threshold"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -99,7 +99,7 @@ jobs:
   # C6: low threshold on alpine (has low/med vulns — should trigger)
   c6-low-alpine:
     name: "C6: low threshold on alpine"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: alpine:3.18
@@ -111,7 +111,7 @@ jobs:
   # C7: high threshold on alpine (med/low vulns — should pass)
   c7-high-alpine:
     name: "C7: high threshold on alpine"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: alpine:3.18
@@ -127,7 +127,7 @@ jobs:
   # C8: multi-scanner + allow_failure (only single-scanner tested in R8)
   c8-allow-multi-scanner:
     name: "C8: allow_failure + multi-scanner"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -139,7 +139,7 @@ jobs:
   # C9: grype + allow_failure + clean image (grype×true, low×true, true×clean)
   c9-allow-grype-clean:
     name: "C9: allow_failure + grype + clean"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: gcr.io/distroless/static-debian12:latest
@@ -151,7 +151,7 @@ jobs:
   # C10: discover + allow_failure (never tested)
   c10-discover-allow:
     name: "C10: discover + allow_failure"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
       scanners: trivy
@@ -166,7 +166,7 @@ jobs:
   c11-discover-grype:
     name: "C11: discover grype only"
     needs: c10-discover-allow
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
       scanners: grype
@@ -177,7 +177,7 @@ jobs:
   c12-discover-all:
     name: "C12: discover all scanners"
     needs: c11-discover-grype
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
       scanners: trivy,grype,syft
@@ -188,7 +188,7 @@ jobs:
   c13-discover-syft:
     name: "C13: discover syft only"
     needs: c12-discover-all
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
       scanners: syft
@@ -202,7 +202,7 @@ jobs:
   # C14: all scanners + high threshold + allow_failure on low-vuln image
   c14-all-high-alpine:
     name: "C14: all scanners + high + allow_failure"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: alpine:3.18
@@ -214,7 +214,7 @@ jobs:
   # C15: multi-scanner + medium threshold on clean image (should pass)
   c15-medium-clean:
     name: "C15: medium threshold on clean"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: gcr.io/distroless/static-debian12:latest
