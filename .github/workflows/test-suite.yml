@@ -18,6 +18,7 @@ on:
           - actions
           - combination
           - regression
+          - scn
         default: 'all'
       argus_ref:
         description: 'Argus branch/tag to test (default: main). Unit + action tests use this ref; reusable workflow tests always use @main.'
@@ -93,6 +94,14 @@ jobs:
     name: "Combination Tests"
     if: inputs.scope == 'all' || inputs.scope == 'combination' || github.event_name == 'schedule' || github.event_name == 'push'
     uses: ./.github/workflows/test-combination.yml
+
+  # ==========================================================================
+  # SCN Detector Tests (S1-S25) — on-demand only (scope=scn)
+  # ==========================================================================
+  scn-tests:
+    name: "SCN Detector Tests"
+    if: inputs.scope == 'scn'
+    uses: ./.github/workflows/test-scn-detector.yml
 
   # ==========================================================================
   # I1: Infrastructure scan regression
@@ -186,6 +195,7 @@ jobs:
       - remote-tests
       - discover-tests
       - combination-tests
+      - scn-tests
       - i1-infrastructure-scan
       - i2-no-hardcoded-urls
       - i3-config-scan
@@ -201,11 +211,13 @@ jobs:
           REMOTE_JSON: ${{ needs.remote-tests.outputs.results }}
           DISCOVER_JSON: ${{ needs.discover-tests.outputs.results }}
           COMBO_JSON: ${{ needs.combination-tests.outputs.results }}
+          SCN_JSON: ${{ needs.scn-tests.outputs.results }}
           UNIT_RESULT: ${{ needs.unit-tests.result }}
           ACTIONS_RESULT: ${{ needs.action-tests.result }}
           REMOTE_RESULT: ${{ needs.remote-tests.result }}
           DISCOVER_RESULT: ${{ needs.discover-tests.result }}
           COMBO_RESULT: ${{ needs.combination-tests.result }}
+          SCN_RESULT: ${{ needs.scn-tests.result }}
           I1: ${{ needs.i1-infrastructure-scan.result }}
           I2: ${{ needs.i2-no-hardcoded-urls.result }}
           I3: ${{ needs.i3-config-scan.result }}
@@ -246,6 +258,7 @@ jobs:
           REMOTE_ARR=$(safe_json "$REMOTE_JSON")
           DISCOVER_ARR=$(safe_json "$DISCOVER_JSON")
           COMBO_ARR=$(safe_json "$COMBO_JSON")
+          SCN_ARR=$(safe_json "$SCN_JSON")
 
           # Build I1 and I2 inline (they're standalone jobs, not sub-workflows)
           I1_STATUS=$(to_status "$I1")
@@ -268,8 +281,9 @@ jobs:
             --argjson r "$REMOTE_ARR" \
             --argjson d "$DISCOVER_ARR" \
             --argjson c "$COMBO_ARR" \
+            --argjson s "$SCN_ARR" \
             --argjson i "$REGRESSION_ARR" \
-            '$u + $a + $r + $d + $c + $i')
+            '$u + $a + $r + $d + $c + $s + $i')
 
           # Export for dashboard generation step
           {
@@ -335,6 +349,7 @@ jobs:
             echo "| $(cat_icon "$REMOTE_RESULT") | Remote Mode Tests (R1-R12) | 12 | $(cat_counts "$REMOTE_ARR") |"
             echo "| $(cat_icon "$DISCOVER_RESULT") | Discover Mode Tests (D1-D3) | 3 | $(cat_counts "$DISCOVER_ARR") |"
             echo "| $(cat_icon "$COMBO_RESULT") | Combination Tests (C1-C15) | 15 | $(cat_counts "$COMBO_ARR") |"
+            echo "| $(cat_icon "$SCN_RESULT") | SCN Detector Tests (S1-S25) | 25 | $(cat_counts "$SCN_ARR") |"
             echo "| $(cat_icon "$I1") | Infrastructure Scan (I1) | 1 | $([ "$I1_STATUS" = "pass" ] && echo "1" || echo "0")/1 |"
             echo "| $(cat_icon "$I2") | No Hardcoded URLs (I2) | 1 | $([ "$I2_STATUS" = "pass" ] && echo "1" || echo "0")/1 |"
             echo "| $(cat_icon "$I3") | Config-Driven Scan (I3) | 1 | $([ "$I3_STATUS" = "pass" ] && echo "1" || echo "0")/1 |"
@@ -387,6 +402,15 @@ jobs:
               '.[] | "| \(if .status == "pass" then ":white_check_mark:" elif .status == "FAIL" then ":x:" elif .status == "skip" then ":next_track_button:" else ":grey_question:" end) | \(.id) | \(.name) | \(.detail) | [log](\($url)) |"'
             echo ""
 
+            # ---- Section: SCN Detector Tests ----
+            echo "### SCN Detector Tests"
+            echo ""
+            echo "| Status | ID | Name | Detail | Log |"
+            echo "|--------|----|------|--------|-----|"
+            echo "$SCN_ARR" | jq -r --arg url "$RUN_URL" \
+              '.[] | "| \(if .status == "pass" then ":white_check_mark:" elif .status == "FAIL" then ":x:" elif .status == "skip" then ":next_track_button:" else ":grey_question:" end) | \(.id) | \(.name) | \(.detail) | [log](\($url)) |"'
+            echo ""
+
             # ---- Section: Regression Tests ----
             echo "### Regression Tests"
             echo ""
@@ -409,12 +433,13 @@ jobs:
           REMOTE: ${{ needs.remote-tests.result }}
           DISCOVER: ${{ needs.discover-tests.result }}
           COMBO: ${{ needs.combination-tests.result }}
+          SCN: ${{ needs.scn-tests.result }}
           I1: ${{ needs.i1-infrastructure-scan.result }}
           I2: ${{ needs.i2-no-hardcoded-urls.result }}
           I3: ${{ needs.i3-config-scan.result }}
         run: |
           FAILED=0
-          for result in "$UNIT" "$ACTIONS" "$REMOTE" "$DISCOVER" "$COMBO" "$I1" "$I2" "$I3"; do
+          for result in "$UNIT" "$ACTIONS" "$REMOTE" "$DISCOVER" "$COMBO" "$SCN" "$I1" "$I2" "$I3"; do
             [ "$result" = "failure" ] && FAILED=$((FAILED + 1))
           done
 
@@ -467,12 +492,14 @@ jobs:
           REMOTE_JSON: ${{ needs.remote-tests.outputs.results }}
           DISCOVER_JSON: ${{ needs.discover-tests.outputs.results }}
           COMBO_JSON: ${{ needs.combination-tests.outputs.results }}
+          SCN_JSON: ${{ needs.scn-tests.outputs.results }}
           REGRESSION_JSON: ${{ env.REGRESSION_JSON }}
           UNIT_RESULT: ${{ needs.unit-tests.result }}
           ACTIONS_RESULT: ${{ needs.action-tests.result }}
           REMOTE_RESULT: ${{ needs.remote-tests.result }}
           DISCOVER_RESULT: ${{ needs.discover-tests.result }}
           COMBO_RESULT: ${{ needs.combination-tests.result }}
+          SCN_RESULT: ${{ needs.scn-tests.result }}
           I1_RESULT: ${{ needs.i1-infrastructure-scan.result }}
           I2_RESULT: ${{ needs.i2-no-hardcoded-urls.result }}
           I3_RESULT: ${{ needs.i3-config-scan.result }}

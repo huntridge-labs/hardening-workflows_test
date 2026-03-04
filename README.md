@@ -19,7 +19,7 @@ Comprehensive test suite for [huntridge-labs/argus](https://github.com/huntridge
 
 Test results are published to GitHub Pages with each run, showing:
 - Current test status and pass rate
-- Category breakdown (unit, remote, discover, actions, combination, regression)
+- Category breakdown (unit, remote, discover, actions, combination, scn, regression)
 - Historical run data (last 20 runs)
 - The exact commit SHA of Argus being tested
 
@@ -107,7 +107,7 @@ flowchart TD
     SUM5 -->|no| SUM7["step summary only"]
 ```
 
-## Test Matrix (43 tests)
+## Test Matrix (68 tests)
 
 ### Unit Tests — `test-unit.yml`
 
@@ -176,6 +176,31 @@ Pairwise coverage tests filling gaps in the parameter space (mode x scanners x s
 | C14 | remote | trivy+grype+syft | high | true | alpine:3.18 | All scanners + threshold + allow |
 | C15 | remote | trivy+grype | medium | false | distroless | medium TN on clean |
 
+### SCN Detector Tests — `test-scn-detector.yml` (on-demand only)
+
+Validates the [argus scn-detector](https://github.com/huntridge-labs/argus) action — classifies IaC changes into FedRAMP SCN categories. Run with `scope=scn`.
+
+| # | Test | IaC Format | Expected Category | Validates |
+|---|------|-----------|-------------------|-----------|
+| S1 | routine-tags | Terraform | ROUTINE | `tags.*` pattern match |
+| S2 | routine-description | Terraform | ROUTINE | `description` pattern match |
+| S3 | adaptive-instance-type | Terraform (modify) | ADAPTIVE | `instance_type` modify rule |
+| S4 | adaptive-iam-attachment | Terraform | ADAPTIVE | `aws_iam_policy_attachment` create |
+| S5 | transformative-iam-role | Terraform | TRANSFORMATIVE | `aws_iam_role` create |
+| S6 | transformative-db-engine | Terraform (modify) | TRANSFORMATIVE | `aws_rds_*` engine modify |
+| S7 | impact-encryption | Terraform (modify) | IMPACT | Encryption removal |
+| S8 | impact-public-sg | Terraform | IMPACT | `0.0.0.0/0` ingress pattern |
+| S9 | impact-iam-user | Terraform | IMPACT | `aws_iam_user` create |
+| S10 | kubernetes-detection | Kubernetes | detected | K8s YAML format detection |
+| S11 | cloudformation-detection | CloudFormation | detected | CFN YAML format detection |
+| S12 | no-iac-changes | non-IaC | NONE | `has_changes=false` |
+| S13 | fail-on-impact | Terraform | IMPACT (fails) | `fail_on_category=impact` enforcement |
+| S14 | fail-on-adaptive | Terraform | ADAPTIVE (fails) | `fail_on_category=adaptive` enforcement |
+| S15 | mixed-multi-category | Terraform (multi-file) | IMPACT | Highest category wins |
+| S16 | dry-run-issues | Terraform | ADAPTIVE | Dry-run mode: issue payloads without API calls |
+| S17 | manual-review | Terraform | MANUAL_REVIEW | Unmatched resource triggers manual review |
+| S18-S25 | additional coverage | Various | Various | Delete ops, custom profiles, multi-resource, AI fallback |
+
 ### Regression Tests — `test-suite.yml`
 
 | # | Test | Validates |
@@ -199,6 +224,7 @@ gh workflow run test-suite.yml -f scope=remote
 gh workflow run test-suite.yml -f scope=discover
 gh workflow run test-suite.yml -f scope=actions
 gh workflow run test-suite.yml -f scope=combination
+gh workflow run test-suite.yml -f scope=scn
 
 # Test an argus feature branch
 gh workflow run test-suite.yml -f argus_ref=feat/my-feature
@@ -216,6 +242,7 @@ gh run watch
   test-discover.yml          3 discover mode tests
   test-actions-direct.yml    5 composite action tests
   test-combination.yml       15 pairwise combination tests
+  test-scn-detector.yml      25 SCN detector tests (on-demand)
   test-unit.yml              5 unit tests (Python/pytest)
 
 .github/scripts/
@@ -232,6 +259,7 @@ tests/
     structured-image.yml      Structured image object format
     all-options.yml           Every config field populated
     invalid-duplicate.yml     Duplicate names (schema error)
+    custom-scn-profile.yml    Custom SCN classification profile
 ```
 
 ## TP/TN Coverage Matrix
