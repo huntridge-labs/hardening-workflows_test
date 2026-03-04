@@ -2,6 +2,12 @@ name: "Direct Action Tests"
 
 on:
   workflow_call:
+    inputs:
+      argus_ref:
+        description: 'Argus branch/tag to test'
+        required: false
+        type: string
+        default: 'main'
     outputs:
       results:
         description: "JSON array of individual test results"
@@ -25,41 +31,52 @@ jobs:
       - name: Checkout test repo
         uses: actions/checkout@v4
 
+      - name: Checkout argus
+        uses: actions/checkout@v4
+        with:
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
+          path: argus-checkout
+
       - name: Run parse-container-config
         id: parse
-        uses: huntridge-labs/hardening-workflows/.github/actions/parse-container-config@feat/migrate-to-composite-actions
+        uses: ./argus-checkout/.github/actions/parse-container-config
         with:
           config_file: tests/configs/single-public.yml
 
       - name: Validate outputs
+        env:
+          MATRIX: ${{ steps.parse.outputs.matrix }}
+          HAS_CONTAINERS: ${{ steps.parse.outputs.has_containers }}
+          CONTAINER_COUNT: ${{ steps.parse.outputs.container_count }}
         run: |
-          echo "matrix=${{ steps.parse.outputs.matrix }}"
-          echo "has_containers=${{ steps.parse.outputs.has_containers }}"
-          echo "container_count=${{ steps.parse.outputs.container_count }}"
+          echo "matrix=$MATRIX"
+          echo "has_containers=$HAS_CONTAINERS"
+          echo "container_count=$CONTAINER_COUNT"
 
           FAILURES=0
 
           # Check has_containers
-          if [ "${{ steps.parse.outputs.has_containers }}" != "true" ]; then
-            echo "::error::has_containers should be true, got ${{ steps.parse.outputs.has_containers }}"
+          if [ "$HAS_CONTAINERS" != "true" ]; then
+            echo "::error::has_containers should be true, got $HAS_CONTAINERS"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Check container_count
-          if [ "${{ steps.parse.outputs.container_count }}" != "1" ]; then
-            echo "::error::container_count should be 1, got ${{ steps.parse.outputs.container_count }}"
+          if [ "$CONTAINER_COUNT" != "1" ]; then
+            echo "::error::container_count should be 1, got $CONTAINER_COUNT"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Check matrix has 1 include entry
-          INCLUDE_COUNT=$(echo '${{ steps.parse.outputs.matrix }}' | jq '.include | length')
+          INCLUDE_COUNT=$(echo "$MATRIX" | jq '.include | length')
           if [ "$INCLUDE_COUNT" != "1" ]; then
             echo "::error::matrix.include should have 1 entry, got $INCLUDE_COUNT"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Check container name
-          NAME=$(echo '${{ steps.parse.outputs.matrix }}' | jq -r '.include[0].name')
+          NAME=$(echo "$MATRIX" | jq -r '.include[0].name')
           if [ "$NAME" != "alpine-test" ]; then
             echo "::error::First container name should be alpine-test, got $NAME"
             FAILURES=$((FAILURES + 1))
@@ -83,38 +100,49 @@ jobs:
       - name: Checkout test repo
         uses: actions/checkout@v4
 
+      - name: Checkout argus
+        uses: actions/checkout@v4
+        with:
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
+          path: argus-checkout
+
       - name: Run parse-container-config
         id: parse
-        uses: huntridge-labs/hardening-workflows/.github/actions/parse-container-config@feat/migrate-to-composite-actions
+        uses: ./argus-checkout/.github/actions/parse-container-config
         with:
           config_file: tests/configs/multi-container.yml
 
       - name: Validate outputs
+        env:
+          MATRIX: ${{ steps.parse.outputs.matrix }}
+          SCAN_MATRIX: ${{ steps.parse.outputs.scan_matrix }}
+          CONTAINER_COUNT: ${{ steps.parse.outputs.container_count }}
         run: |
           FAILURES=0
 
           # Check container count = 3
-          if [ "${{ steps.parse.outputs.container_count }}" != "3" ]; then
-            echo "::error::container_count should be 3, got ${{ steps.parse.outputs.container_count }}"
+          if [ "$CONTAINER_COUNT" != "3" ]; then
+            echo "::error::container_count should be 3, got $CONTAINER_COUNT"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Check matrix has 3 entries
-          MATRIX_COUNT=$(echo '${{ steps.parse.outputs.matrix }}' | jq '.include | length')
+          MATRIX_COUNT=$(echo "$MATRIX" | jq '.include | length')
           if [ "$MATRIX_COUNT" != "3" ]; then
             echo "::error::matrix should have 3 entries, got $MATRIX_COUNT"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Check scan_matrix has 6+ entries (nginx=3 scanners + alpine=1 + node=2 = 6)
-          SCAN_COUNT=$(echo '${{ steps.parse.outputs.scan_matrix }}' | jq '.include | length')
+          SCAN_COUNT=$(echo "$SCAN_MATRIX" | jq '.include | length')
           if [ "$SCAN_COUNT" -lt 6 ]; then
             echo "::error::scan_matrix should have at least 6 entries, got $SCAN_COUNT"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Verify container names
-          NAMES=$(echo '${{ steps.parse.outputs.matrix }}' | jq -r '.include[].name' | sort | tr '\n' ',')
+          NAMES=$(echo "$MATRIX" | jq -r '.include[].name' | sort | tr '\n' ',')
           EXPECTED="alpine-pinned,nginx-old,node-legacy,"
           if [ "$NAMES" != "$EXPECTED" ]; then
             echo "::error::Container names should be '$EXPECTED', got '$NAMES'"
@@ -122,7 +150,7 @@ jobs:
           fi
 
           # Verify allow_failure on node-legacy
-          ALLOW=$(echo '${{ steps.parse.outputs.matrix }}' | jq '.include[] | select(.name == "node-legacy") | .allow_failure')
+          ALLOW=$(echo "$MATRIX" | jq '.include[] | select(.name == "node-legacy") | .allow_failure')
           if [ "$ALLOW" != "true" ]; then
             echo "::error::node-legacy should have allow_failure=true, got $ALLOW"
             FAILURES=$((FAILURES + 1))
@@ -143,17 +171,26 @@ jobs:
       - name: Checkout test repo
         uses: actions/checkout@v4
 
+      - name: Checkout argus
+        uses: actions/checkout@v4
+        with:
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
+          path: argus-checkout
+
       - name: Run parse-container-config
         id: parse
-        uses: huntridge-labs/hardening-workflows/.github/actions/parse-container-config@feat/migrate-to-composite-actions
+        uses: ./argus-checkout/.github/actions/parse-container-config
         with:
           config_file: tests/configs/structured-image.yml
 
       - name: Validate structured image reference
+        env:
+          MATRIX: ${{ steps.parse.outputs.matrix }}
         run: |
           FAILURES=0
 
-          IMAGE=$(echo '${{ steps.parse.outputs.matrix }}' | jq -r '.include[0].image')
+          IMAGE=$(echo "$MATRIX" | jq -r '.include[0].image')
           echo "Resolved image reference: $IMAGE"
 
           # Image should contain docker.io, library, nginx, and 1.25
@@ -177,51 +214,63 @@ jobs:
       - name: Checkout test repo
         uses: actions/checkout@v4
 
+      - name: Checkout argus
+        uses: actions/checkout@v4
+        with:
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
+          path: argus-checkout
+
       - name: Run parse-container-config
         id: parse
-        uses: huntridge-labs/hardening-workflows/.github/actions/parse-container-config@feat/migrate-to-composite-actions
+        uses: ./argus-checkout/.github/actions/parse-container-config
         with:
           config_file: tests/configs/all-options.yml
 
       - name: Validate outputs
+        env:
+          MATRIX: ${{ steps.parse.outputs.matrix }}
+          SCAN_MATRIX: ${{ steps.parse.outputs.scan_matrix }}
+          HAS_CONTAINERS: ${{ steps.parse.outputs.has_containers }}
+          CONTAINER_COUNT: ${{ steps.parse.outputs.container_count }}
         run: |
           FAILURES=0
 
           # Check has_containers
-          if [ "${{ steps.parse.outputs.has_containers }}" != "true" ]; then
-            echo "::error::has_containers should be true, got ${{ steps.parse.outputs.has_containers }}"
+          if [ "$HAS_CONTAINERS" != "true" ]; then
+            echo "::error::has_containers should be true, got $HAS_CONTAINERS"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Check container_count = 1
-          if [ "${{ steps.parse.outputs.container_count }}" != "1" ]; then
-            echo "::error::container_count should be 1, got ${{ steps.parse.outputs.container_count }}"
+          if [ "$CONTAINER_COUNT" != "1" ]; then
+            echo "::error::container_count should be 1, got $CONTAINER_COUNT"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Verify container name
-          NAME=$(echo '${{ steps.parse.outputs.matrix }}' | jq -r '.include[0].name')
+          NAME=$(echo "$MATRIX" | jq -r '.include[0].name')
           if [ "$NAME" != "full-options-test" ]; then
             echo "::error::Container name should be full-options-test, got $NAME"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Verify allow_failure is true
-          ALLOW=$(echo '${{ steps.parse.outputs.matrix }}' | jq '.include[0].allow_failure')
+          ALLOW=$(echo "$MATRIX" | jq '.include[0].allow_failure')
           if [ "$ALLOW" != "true" ]; then
             echo "::error::allow_failure should be true, got $ALLOW"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Verify fail_on_severity = high
-          SEV=$(echo '${{ steps.parse.outputs.matrix }}' | jq -r '.include[0].fail_on_severity')
+          SEV=$(echo "$MATRIX" | jq -r '.include[0].fail_on_severity')
           if [ "$SEV" != "high" ]; then
             echo "::error::fail_on_severity should be high, got $SEV"
             FAILURES=$((FAILURES + 1))
           fi
 
           # Verify all 3 scanners present in scan_matrix
-          SCAN_COUNT=$(echo '${{ steps.parse.outputs.scan_matrix }}' | jq '.include | length')
+          SCAN_COUNT=$(echo "$SCAN_MATRIX" | jq '.include | length')
           if [ "$SCAN_COUNT" != "3" ]; then
             echo "::error::scan_matrix should have 3 entries (trivy,grype,syft), got $SCAN_COUNT"
             FAILURES=$((FAILURES + 1))
@@ -242,19 +291,28 @@ jobs:
       - name: Checkout test repo
         uses: actions/checkout@v4
 
+      - name: Checkout argus
+        uses: actions/checkout@v4
+        with:
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
+          path: argus-checkout
+
       - name: Run parse-container-config (expect failure)
         id: parse
         continue-on-error: true
-        uses: huntridge-labs/hardening-workflows/.github/actions/parse-container-config@feat/migrate-to-composite-actions
+        uses: ./argus-checkout/.github/actions/parse-container-config
         with:
           config_file: tests/configs/invalid-duplicate.yml
 
       - name: Validate that parsing failed
+        env:
+          PARSE_OUTCOME: ${{ steps.parse.outcome }}
         run: |
-          if [ "${{ steps.parse.outcome }}" = "failure" ]; then
+          if [ "$PARSE_OUTCOME" = "failure" ]; then
             echo "PASS: Parser correctly rejected invalid config with duplicate names"
           else
-            echo "FAIL: Parser should have rejected duplicate container names but returned ${{ steps.parse.outcome }}"
+            echo "FAIL: Parser should have rejected duplicate container names but returned $PARSE_OUTCOME"
             exit 1
           fi
 

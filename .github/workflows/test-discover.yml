@@ -32,7 +32,7 @@ jobs:
   # --------------------------------------------------------------------------
   d1-discover-mixed:
     name: "D1: discover mixed"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
       scanners: trivy,grype
@@ -45,7 +45,7 @@ jobs:
   d2-discover-trivy-only:
     name: "D2: discover trivy only"
     needs: d1-discover-mixed
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
       scanners: trivy
@@ -58,7 +58,7 @@ jobs:
   d3-discover-severity:
     name: "D3: discover + severity"
     needs: d2-discover-trivy-only
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: discover
       scanners: trivy,grype

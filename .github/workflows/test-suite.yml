@@ -1,4 +1,4 @@
-name: "Hardening Workflows Test Suite"
+name: "Argus Test Suite"
 
 on:
   push:
@@ -19,6 +19,11 @@ on:
           - combination
           - regression
         default: 'all'
+      argus_ref:
+        description: 'Argus branch/tag to test (default: main). Unit + action tests use this ref; reusable workflow tests always use @main.'
+        required: false
+        type: string
+        default: 'main'
 
   schedule:
     # Weekly Sunday 9am UTC
@@ -34,6 +39,7 @@ permissions:
   actions: read
   packages: read
   pull-requests: write
+  checks: write
   pages: write
   id-token: write
 
@@ -51,6 +57,8 @@ jobs:
     name: "Unit Tests"
     if: inputs.scope == 'all' || inputs.scope == 'unit' || github.event_name == 'schedule' || github.event_name == 'push'
     uses: ./.github/workflows/test-unit.yml
+    with:
+      argus_ref: ${{ inputs.argus_ref || 'main' }}
 
   # ==========================================================================
   # Direct Action Tests (A1-A5)
@@ -59,6 +67,8 @@ jobs:
     name: "Direct Action Tests"
     if: inputs.scope == 'all' || inputs.scope == 'actions' || github.event_name == 'schedule' || github.event_name == 'push'
     uses: ./.github/workflows/test-actions-direct.yml
+    with:
+      argus_ref: ${{ inputs.argus_ref || 'main' }}
 
   # ==========================================================================
   # Remote Mode Tests (R1-R12)
@@ -90,7 +100,7 @@ jobs:
   i1-infrastructure-scan:
     name: "I1: infrastructure-scan regression"
     if: inputs.scope == 'all' || inputs.scope == 'regression' || github.event_name == 'schedule' || github.event_name == 'push'
-    uses: huntridge-labs/hardening-workflows/.github/workflows/infrastructure-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/infrastructure-scan.yml@main
     with:
       fail_on_severity: none
 
@@ -103,11 +113,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout upstream PR branch
+      - name: Checkout argus
         uses: actions/checkout@v4
         with:
-          repository: huntridge-labs/hardening-workflows
-          ref: feat/migrate-to-composite-actions
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
 
       - name: Scan for hardcoded github.com in shell scripts
         run: |
@@ -155,6 +165,16 @@ jobs:
           echo "No hardcoded github.com URLs found in container scanning actions"
 
   # ==========================================================================
+  # I3: Config-driven container scan regression
+  # ==========================================================================
+  i3-config-scan:
+    name: "I3: config-driven scan"
+    if: inputs.scope == 'all' || inputs.scope == 'regression' || github.event_name == 'schedule' || github.event_name == 'push'
+    uses: huntridge-labs/argus/.github/workflows/container-scan-from-config.yml@main
+    with:
+      config_file: tests/configs/single-public.yml
+
+  # ==========================================================================
   # Final Summary
   # ==========================================================================
   summary:
@@ -168,6 +188,7 @@ jobs:
       - combination-tests
       - i1-infrastructure-scan
       - i2-no-hardcoded-urls
+      - i3-config-scan
     if: always()
     environment:
       name: github-pages
@@ -187,6 +208,7 @@ jobs:
           COMBO_RESULT: ${{ needs.combination-tests.result }}
           I1: ${{ needs.i1-infrastructure-scan.result }}
           I2: ${{ needs.i2-no-hardcoded-urls.result }}
+          I3: ${{ needs.i3-config-scan.result }}
           SCOPE: ${{ inputs.scope || 'all' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -228,12 +250,15 @@ jobs:
           # Build I1 and I2 inline (they're standalone jobs, not sub-workflows)
           I1_STATUS=$(to_status "$I1")
           I2_STATUS=$(to_status "$I2")
+          I3_STATUS=$(to_status "$I3")
           REGRESSION_ARR=$(jq -n -c \
             --arg i1 "$I1_STATUS" \
             --arg i2 "$I2_STATUS" \
+            --arg i3 "$I3_STATUS" \
             '[
               {"id":"I1","name":"infrastructure-scan regression","detail":"infrastructure-scan.yml reusable workflow still works","status":$i1},
-              {"id":"I2","name":"no hardcoded URLs","detail":"No hardcoded github.com in container action scripts","status":$i2}
+              {"id":"I2","name":"no hardcoded URLs","detail":"No hardcoded github.com in container action scripts","status":$i2},
+              {"id":"I3","name":"config-driven scan","detail":"container-scan-from-config.yml reusable workflow still works","status":$i3}
             ]')
 
           # Merge all into one array
@@ -292,7 +317,7 @@ jobs:
 
           # ---- Write summary ----
           {
-            echo "# Hardening Workflows Test Suite Results"
+            echo "# Argus Test Suite Results"
             echo ""
             echo "**Scope:** \`$SCOPE\` &nbsp; **Date:** $(date -u '+%Y-%m-%d %H:%M UTC')"
             echo "**Verdict:** $VERDICT &nbsp; ($PASSED passed, $FAILED failed, $SKIPPED skipped — $PASS_RATE% pass rate)"
@@ -312,6 +337,7 @@ jobs:
             echo "| $(cat_icon "$COMBO_RESULT") | Combination Tests (C1-C15) | 15 | $(cat_counts "$COMBO_ARR") |"
             echo "| $(cat_icon "$I1") | Infrastructure Scan (I1) | 1 | $([ "$I1_STATUS" = "pass" ] && echo "1" || echo "0")/1 |"
             echo "| $(cat_icon "$I2") | No Hardcoded URLs (I2) | 1 | $([ "$I2_STATUS" = "pass" ] && echo "1" || echo "0")/1 |"
+            echo "| $(cat_icon "$I3") | Config-Driven Scan (I3) | 1 | $([ "$I3_STATUS" = "pass" ] && echo "1" || echo "0")/1 |"
             echo ""
             echo "---"
             echo ""
@@ -385,9 +411,10 @@ jobs:
           COMBO: ${{ needs.combination-tests.result }}
           I1: ${{ needs.i1-infrastructure-scan.result }}
           I2: ${{ needs.i2-no-hardcoded-urls.result }}
+          I3: ${{ needs.i3-config-scan.result }}
         run: |
           FAILED=0
-          for result in "$UNIT" "$ACTIONS" "$REMOTE" "$DISCOVER" "$COMBO" "$I1" "$I2"; do
+          for result in "$UNIT" "$ACTIONS" "$REMOTE" "$DISCOVER" "$COMBO" "$I1" "$I2" "$I3"; do
             [ "$result" = "failure" ] && FAILED=$((FAILED + 1))
           done
 
@@ -403,24 +430,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Resolve hardening action ref
-        id: hardening-ref
+      - name: Resolve argus ref
+        id: argus-ref
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          HARDENING_REPO="huntridge-labs/hardening-workflows"
-          HARDENING_REF="feat/migrate-to-composite-actions"
+          ARGUS_REPO="huntridge-labs/argus"
+          ARGUS_REF="${{ inputs.argus_ref || 'main' }}"
 
           # Resolve the commit SHA for the branch
-          HARDENING_SHA=$(gh api "repos/${HARDENING_REPO}/commits/${HARDENING_REF}" --jq '.sha' 2>/dev/null || echo "unknown")
-          HARDENING_SHA_SHORT="${HARDENING_SHA:0:7}"
+          ARGUS_SHA=$(gh api "repos/${ARGUS_REPO}/commits/${ARGUS_REF}" --jq '.sha' 2>/dev/null || echo "unknown")
+          ARGUS_SHA_SHORT="${ARGUS_SHA:0:7}"
 
-          echo "hardening_repo=${HARDENING_REPO}" >> "$GITHUB_OUTPUT"
-          echo "hardening_ref=${HARDENING_REF}" >> "$GITHUB_OUTPUT"
-          echo "hardening_sha=${HARDENING_SHA}" >> "$GITHUB_OUTPUT"
-          echo "hardening_sha_short=${HARDENING_SHA_SHORT}" >> "$GITHUB_OUTPUT"
+          echo "argus_repo=${ARGUS_REPO}" >> "$GITHUB_OUTPUT"
+          echo "argus_ref=${ARGUS_REF}" >> "$GITHUB_OUTPUT"
+          echo "argus_sha=${ARGUS_SHA}" >> "$GITHUB_OUTPUT"
+          echo "argus_sha_short=${ARGUS_SHA_SHORT}" >> "$GITHUB_OUTPUT"
 
-          echo "Resolved ${HARDENING_REPO}@${HARDENING_REF} to ${HARDENING_SHA_SHORT}"
+          echo "Resolved ${ARGUS_REPO}@${ARGUS_REF} to ${ARGUS_SHA_SHORT}"
 
       - name: Fetch previous history.json
         run: |
@@ -448,15 +475,16 @@ jobs:
           COMBO_RESULT: ${{ needs.combination-tests.result }}
           I1_RESULT: ${{ needs.i1-infrastructure-scan.result }}
           I2_RESULT: ${{ needs.i2-no-hardcoded-urls.result }}
+          I3_RESULT: ${{ needs.i3-config-scan.result }}
           SCOPE: ${{ inputs.scope || 'all' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
           PAGES_DIR: _site
-          HARDENING_REPO: ${{ steps.hardening-ref.outputs.hardening_repo }}
-          HARDENING_REF: ${{ steps.hardening-ref.outputs.hardening_ref }}
-          HARDENING_SHA: ${{ steps.hardening-ref.outputs.hardening_sha }}
-          HARDENING_SHA_SHORT: ${{ steps.hardening-ref.outputs.hardening_sha_short }}
+          ARGUS_REPO: ${{ steps.argus-ref.outputs.argus_repo }}
+          ARGUS_REF: ${{ steps.argus-ref.outputs.argus_ref }}
+          ARGUS_SHA: ${{ steps.argus-ref.outputs.argus_sha }}
+          ARGUS_SHA_SHORT: ${{ steps.argus-ref.outputs.argus_sha_short }}
         run: bash .github/scripts/generate-dashboard.sh
 
       - name: Setup Pages

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # generate-dashboard.sh — Generates a self-contained HTML dashboard + history.json
-# for the hardening-workflows test suite. Called from the summary job in test-suite.yml.
+# for the Argus test suite. Called from the summary job in test-suite.yml.
 #
 # Expected env vars:
 #   ALL_JSON      — merged JSON array of all test results
@@ -10,11 +10,11 @@
 #   REPO          — owner/repo
 #   PAGES_DIR     — directory to write output files into
 #   UNIT_JSON, ACTIONS_JSON, REMOTE_JSON, DISCOVER_JSON, COMBO_JSON, REGRESSION_JSON
-#   UNIT_RESULT, ACTIONS_RESULT, REMOTE_RESULT, DISCOVER_RESULT, COMBO_RESULT, I1_RESULT, I2_RESULT
-#   HARDENING_REPO — upstream repo (e.g., huntridge-labs/hardening-workflows)
-#   HARDENING_REF  — branch/tag being tested (e.g., feat/migrate-to-composite-actions)
-#   HARDENING_SHA  — full commit SHA of the ref
-#   HARDENING_SHA_SHORT — short (7-char) commit SHA
+#   UNIT_RESULT, ACTIONS_RESULT, REMOTE_RESULT, DISCOVER_RESULT, COMBO_RESULT, I1_RESULT, I2_RESULT, I3_RESULT
+#   ARGUS_REPO — upstream repo (e.g., huntridge-labs/argus)
+#   ARGUS_REF  — branch/tag being tested (e.g., main)
+#   ARGUS_SHA  — full commit SHA of the ref
+#   ARGUS_SHA_SHORT — short (7-char) commit SHA
 set -euo pipefail
 
 OUT="${PAGES_DIR:?PAGES_DIR not set}"
@@ -93,6 +93,7 @@ DISCOVER_RESULT="${DISCOVER_RESULT:-skipped}"
 COMBO_RESULT="${COMBO_RESULT:-skipped}"
 I1_RESULT="${I1_RESULT:-skipped}"
 I2_RESULT="${I2_RESULT:-skipped}"
+I3_RESULT="${I3_RESULT:-skipped}"
 
 # Build categories JSON for embedding
 CATEGORIES=$(jq -n -c \
@@ -103,6 +104,7 @@ CATEGORIES=$(jq -n -c \
   --arg cs "$(cat_status "$COMBO_RESULT")" \
   --arg i1s "$(cat_status "$I1_RESULT")" \
   --arg i2s "$(cat_status "$I2_RESULT")" \
+  --arg i3s "$(cat_status "$I3_RESULT")" \
   --argjson u "$UNIT_JSON" \
   --argjson a "$ACTIONS_JSON" \
   --argjson r "$REMOTE_JSON" \
@@ -116,7 +118,8 @@ CATEGORIES=$(jq -n -c \
     {name:"Discover Mode Tests (D1–D3)",status:$ds, tests:$d},
     {name:"Combination Tests (C1–C15)", status:$cs, tests:$co},
     {name:"Infrastructure Scan (I1)",   status:$i1s,tests:[$ig[0]]},
-    {name:"No Hardcoded URLs (I2)",     status:$i2s,tests:[$ig[1]]}
+    {name:"No Hardcoded URLs (I2)",     status:$i2s,tests:[$ig[1]]},
+    {name:"Config-Driven Scan (I3)",    status:$i3s,tests:[$ig[2]]}
   ]')
 
 HISTORY_DATA=$(cat "$HISTORY_FILE")
@@ -128,7 +131,7 @@ cat > "$OUT/index.html" << 'HTMLEOF'
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hardening Workflows Test Suite</title>
+<title>Argus Test Suite</title>
 <style>
 :root {
   --bg: #ffffff; --bg2: #f6f8fa; --fg: #1f2328; --fg2: #656d76;
@@ -158,15 +161,15 @@ body {
 header { border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
 header h1 { margin: 0 0 4px; font-size: 1.5rem; }
 header a { color: var(--accent); text-decoration: none; font-size: 0.85rem; }
-.hardening-info {
+.argus-info {
   margin-top: 8px; padding: 8px 12px; background: var(--bg2);
   border: 1px solid var(--border); border-radius: 6px; font-size: 0.82rem;
   display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap;
 }
-.hardening-info .label { color: var(--fg2); }
-.hardening-info .value { font-family: 'SFMono-Regular', Consolas, monospace; color: var(--fg); }
-.hardening-info a { color: var(--accent); text-decoration: none; }
-.hardening-info a:hover { text-decoration: underline; }
+.argus-info .label { color: var(--fg2); }
+.argus-info .value { font-family: 'SFMono-Regular', Consolas, monospace; color: var(--fg); }
+.argus-info a { color: var(--accent); text-decoration: none; }
+.argus-info a:hover { text-decoration: underline; }
 .banner {
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
   padding: 16px; border-radius: 8px; margin-bottom: 24px;
@@ -220,9 +223,9 @@ footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border
 <body>
 <div class="container">
   <header>
-    <h1>Hardening Workflows Test Suite</h1>
+    <h1>Argus Test Suite</h1>
     <a id="repo-link" href="#"></a>
-    <div id="hardening-info" class="hardening-info"></div>
+    <div id="argus-info" class="argus-info"></div>
   </header>
   <div id="banner" class="banner"></div>
   <div class="section-title">Category Overview</div>
@@ -255,10 +258,10 @@ HTMLEOF
   echo "  passRate: $PASS_RATE,"
   echo "  runUrl: \"$RUN_URL\","
   echo "  repo: \"$REPO\","
-  echo "  hardeningRepo: \"${HARDENING_REPO:-}\","
-  echo "  hardeningRef: \"${HARDENING_REF:-}\","
-  echo "  hardeningSha: \"${HARDENING_SHA:-}\","
-  echo "  hardeningShaShort: \"${HARDENING_SHA_SHORT:-}\","
+  echo "  argusRepo: \"${ARGUS_REPO:-}\","
+  echo "  argusRef: \"${ARGUS_REF:-}\","
+  echo "  argusSha: \"${ARGUS_SHA:-}\","
+  echo "  argusShaShort: \"${ARGUS_SHA_SHORT:-}\","
   printf '  categories: %s,\n' "$CATEGORIES"
   printf '  history: %s\n' "$HISTORY_DATA"
   echo "};"
@@ -276,24 +279,24 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
   repoLink.href = serverUrl + '/' + d.repo;
   repoLink.textContent = d.repo;
 
-  // hardening action info
-  const hardeningInfo = document.getElementById('hardening-info');
-  if (d.hardeningRepo && d.hardeningSha && d.hardeningSha !== 'unknown') {
-    const commitUrl = serverUrl + '/' + d.hardeningRepo + '/commit/' + d.hardeningSha;
-    const refUrl = serverUrl + '/' + d.hardeningRepo + '/tree/' + d.hardeningRef;
-    hardeningInfo.innerHTML =
+  // argus action info
+  const argusInfo = document.getElementById('argus-info');
+  if (d.argusRepo && d.argusSha && d.argusSha !== 'unknown') {
+    const commitUrl = serverUrl + '/' + d.argusRepo + '/commit/' + d.argusSha;
+    const refUrl = serverUrl + '/' + d.argusRepo + '/tree/' + d.argusRef;
+    argusInfo.innerHTML =
       '<span class="label">Testing:</span> ' +
-      '<a href="' + serverUrl + '/' + d.hardeningRepo + '">' + d.hardeningRepo + '</a>' +
+      '<a href="' + serverUrl + '/' + d.argusRepo + '">' + d.argusRepo + '</a>' +
       '<span class="label">Ref:</span> ' +
-      '<a class="value" href="' + refUrl + '">' + d.hardeningRef + '</a>' +
+      '<a class="value" href="' + refUrl + '">' + d.argusRef + '</a>' +
       '<span class="label">Commit:</span> ' +
-      '<a class="value" href="' + commitUrl + '">' + d.hardeningShaShort + '</a>';
-  } else if (d.hardeningRepo && d.hardeningRef) {
-    hardeningInfo.innerHTML =
+      '<a class="value" href="' + commitUrl + '">' + d.argusShaShort + '</a>';
+  } else if (d.argusRepo && d.argusRef) {
+    argusInfo.innerHTML =
       '<span class="label">Testing:</span> ' +
-      '<span class="value">' + d.hardeningRepo + '@' + d.hardeningRef + '</span>';
+      '<span class="value">' + d.argusRepo + '@' + d.argusRef + '</span>';
   } else {
-    hardeningInfo.style.display = 'none';
+    argusInfo.style.display = 'none';
   }
 
   // banner

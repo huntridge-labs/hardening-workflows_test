@@ -31,7 +31,7 @@ jobs:
   # --------------------------------------------------------------------------
   r1-vuln-all-scanners:
     name: "R1: vuln + all scanners"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -45,7 +45,7 @@ jobs:
   # --------------------------------------------------------------------------
   r2-clean-image:
     name: "R2: clean image"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: gcr.io/distroless/static-debian12:latest
@@ -59,7 +59,7 @@ jobs:
   # --------------------------------------------------------------------------
   r3-trivy-only:
     name: "R3: trivy only"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: alpine:3.18
@@ -73,7 +73,7 @@ jobs:
   # --------------------------------------------------------------------------
   r4-grype-only:
     name: "R4: grype only"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: alpine:3.18
@@ -87,7 +87,7 @@ jobs:
   # --------------------------------------------------------------------------
   r5-syft-only:
     name: "R5: syft only"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: alpine:3.18
@@ -102,7 +102,7 @@ jobs:
   # --------------------------------------------------------------------------
   r6-fail-critical:
     name: "R6: fail on critical"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -116,7 +116,7 @@ jobs:
   # --------------------------------------------------------------------------
   r7-pass-none:
     name: "R7: pass with none threshold"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -130,7 +130,7 @@ jobs:
   # --------------------------------------------------------------------------
   r8-allow-failure:
     name: "R8: allow failure"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0
@@ -144,7 +144,7 @@ jobs:
   # --------------------------------------------------------------------------
   r9-bad-image:
     name: "R9: bad image"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nonexistent/nosuchimage:v0
@@ -158,7 +158,7 @@ jobs:
   # --------------------------------------------------------------------------
   r10-clean-strict:
     name: "R10: clean + strict threshold"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: gcr.io/distroless/static-debian12:latest
@@ -172,7 +172,7 @@ jobs:
   # --------------------------------------------------------------------------
   r11-threshold-precision:
     name: "R11: threshold precision"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: alpine:3.18
@@ -186,7 +186,7 @@ jobs:
   # --------------------------------------------------------------------------
   r12-dedup-validation:
     name: "R12: dedup validation"
-    uses: huntridge-labs/hardening-workflows/.github/workflows/container-scan.yml@feat/migrate-to-composite-actions
+    uses: huntridge-labs/argus/.github/workflows/container-scan.yml@main
     with:
       scan_mode: remote
       image_ref: nginx:1.19.0

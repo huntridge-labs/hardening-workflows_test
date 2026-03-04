@@ -2,6 +2,12 @@ name: "Unit Tests"
 
 on:
   workflow_call:
+    inputs:
+      argus_ref:
+        description: 'Argus branch/tag to test'
+        required: false
+        type: string
+        default: 'main'
     outputs:
       results:
         description: "JSON array of individual test results"
@@ -11,90 +17,118 @@ permissions:
   contents: read
 
 jobs:
-  # U1: parse-container-config.test.js
+  # U1: parse-container-config unit tests
   parse-container-config:
-    name: "U1: parse-container-config.test.js"
+    name: "U1: parse-container-config"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout upstream PR branch
+      - name: Checkout argus
         uses: actions/checkout@v4
         with:
-          repository: huntridge-labs/hardening-workflows
-          ref: feat/migrate-to-composite-actions
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
+          python-version: '3.13'
 
       - name: Install dependencies
-        working-directory: .github/actions/parse-container-config
-        run: npm install --no-save js-yaml ajv
+        run: pip install pytest pytest-cov pyyaml
 
-      - name: Run tests
-        working-directory: .github/actions/parse-container-config
-        run: |
-          npm install --no-save jest
-          npx jest tests/test-parse-container-config.test.js --verbose 2>&1
-          echo "result=pass" >> "$GITHUB_OUTPUT"
-        id: test
+      - name: Run parse-container-config tests
+        run: pytest .github/actions/parse-container-config/tests/test_parse_container_config.py -v --no-cov --tb=short
 
-  # U2: test-parse-trivy-results.sh
-  parse-trivy-results:
-    name: "U2: test-parse-trivy-results.sh"
+  # U2: scanner-container unit tests (trivy parser, grype parser, summary generator)
+  scanner-container:
+    name: "U2: scanner-container"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout upstream PR branch
+      - name: Checkout argus
         uses: actions/checkout@v4
         with:
-          repository: huntridge-labs/hardening-workflows
-          ref: feat/migrate-to-composite-actions
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
 
-      - name: Run trivy parser tests
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install pytest pytest-cov pyyaml
+
+      - name: Run scanner-container tests
+        env:
+          PYTHONPATH: .github/actions
         run: |
-          chmod +x .github/actions/scanner-container/tests/test-parse-trivy-results.sh
-          chmod +x .github/actions/scanner-container/scripts/parse-trivy-results.sh
-          .github/actions/scanner-container/tests/test-parse-trivy-results.sh
+          pytest \
+            .github/actions/scanner-container/tests/test_parse_trivy_results.py \
+            .github/actions/scanner-container/tests/test_parse_grype_results.py \
+            .github/actions/scanner-container/tests/test_generate_container_summary.py \
+            -v --no-cov --tb=short
 
-  # U3: test-parse-grype-results.sh
-  parse-grype-results:
-    name: "U3: test-parse-grype-results.sh"
+  # U3: Other scanner unit tests (checkov, clamav, codeql, opengrep, trivy-iac, zap)
+  other-scanners:
+    name: "U3: other scanner tests"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout upstream PR branch
+      - name: Checkout argus
         uses: actions/checkout@v4
         with:
-          repository: huntridge-labs/hardening-workflows
-          ref: feat/migrate-to-composite-actions
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
 
-      - name: Run grype parser tests
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install pytest pytest-cov pyyaml
+
+      - name: Run other scanner tests
+        env:
+          PYTHONPATH: .github/actions
         run: |
-          chmod +x .github/actions/scanner-container/tests/test-parse-grype-results.sh
-          chmod +x .github/actions/scanner-container/scripts/parse-grype-results.sh
-          .github/actions/scanner-container/tests/test-parse-grype-results.sh
+          pytest \
+            .github/actions/scanner-checkov/tests/ \
+            .github/actions/scanner-clamav/tests/ \
+            .github/actions/scanner-codeql/tests/ \
+            .github/actions/scanner-opengrep/tests/ \
+            .github/actions/scanner-trivy-iac/tests/ \
+            .github/actions/scanner-zap/tests/ \
+            .github/actions/parse-zap-config/tests/ \
+            -v --no-cov --tb=short
 
-  # U4: test-generate-container-summary.sh
-  generate-container-summary:
-    name: "U4: test-generate-container-summary.sh"
+  # U4: SCN detector unit tests
+  scn-detector:
+    name: "U4: scn-detector tests"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout upstream PR branch
+      - name: Checkout argus
         uses: actions/checkout@v4
         with:
-          repository: huntridge-labs/hardening-workflows
-          ref: feat/migrate-to-composite-actions
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
 
-      - name: Run summary generation tests
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
         run: |
-          chmod +x .github/actions/scanner-container/tests/test-generate-container-summary.sh
-          chmod +x .github/actions/scanner-container/scripts/generate-container-summary.sh
-          chmod +x .github/actions/scanner-container/scripts/parse-trivy-results.sh
-          chmod +x .github/actions/scanner-container/scripts/parse-grype-results.sh
-          .github/actions/scanner-container/tests/test-generate-container-summary.sh
+          pip install pytest pytest-cov pyyaml requests
+
+      - name: Run SCN detector tests
+        env:
+          PYTHONPATH: .github/actions
+        run: pytest .github/actions/scn-detector/tests/ -v --no-cov --tb=short
 
   # U5: GHES static analysis
   ghes-static-analysis:
@@ -102,28 +136,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout upstream PR branch
+      - name: Checkout argus
         uses: actions/checkout@v4
         with:
-          repository: huntridge-labs/hardening-workflows
-          ref: feat/migrate-to-composite-actions
+          repository: huntridge-labs/argus
+          ref: ${{ inputs.argus_ref || 'main' }}
 
       - name: Check for hardcoded github.com URLs in action scripts
         run: |
-          echo "Scanning action shell scripts for hardcoded github.com URLs..."
+          echo "Scanning action scripts for hardcoded github.com URLs..."
           VIOLATIONS=0
 
-          # Search shell scripts in container-related actions for hardcoded URLs
+          # Search Python and shell scripts in actions for hardcoded URLs
           # Exclude test files, README, docs, comments, and the server_url references
           while IFS= read -r script; do
             [[ "$script" == *"/tests/"* ]] && continue
+            [[ "$script" == *"__pycache__"* ]] && continue
             MATCHES=$(grep -n 'https://github\.com' "$script" | grep -v '^\s*#' | grep -v 'github\.server_url' | grep -v 'GITHUB_SERVER_URL' || true)
             if [ -n "$MATCHES" ]; then
               echo "VIOLATION in $script:"
               echo "$MATCHES"
               VIOLATIONS=$((VIOLATIONS + 1))
             fi
-          done < <(find .github/actions/scanner-container .github/actions/scanner-container-summary .github/actions/parse-container-config -name "*.sh" -type f)
+          done < <(find .github/actions/scanner-container .github/actions/scanner-container-summary .github/actions/parse-container-config -name "*.sh" -o -name "*.py" -type f 2>/dev/null)
 
           # Also check action.yml files for hardcoded URLs in run blocks
           while IFS= read -r action; do
@@ -133,7 +168,7 @@ jobs:
               echo "$MATCHES"
               VIOLATIONS=$((VIOLATIONS + 1))
             fi
-          done < <(find .github/actions/scanner-container .github/actions/scanner-container-summary .github/actions/parse-container-config -name "action.yml" -type f)
+          done < <(find .github/actions/scanner-container .github/actions/scanner-container-summary .github/actions/parse-container-config -name "action.yml" -type f 2>/dev/null)
 
           if [ "$VIOLATIONS" -gt 0 ]; then
             echo "::error::Found $VIOLATIONS file(s) with hardcoded github.com URLs"
@@ -151,9 +186,9 @@ jobs:
     if: always()
     needs:
       - parse-container-config
-      - parse-trivy-results
-      - parse-grype-results
-      - generate-container-summary
+      - scanner-container
+      - other-scanners
+      - scn-detector
       - ghes-static-analysis
     outputs:
       results: ${{ steps.collect.outputs.results }}
@@ -162,9 +197,9 @@ jobs:
         id: collect
         env:
           U1: ${{ needs.parse-container-config.result }}
-          U2: ${{ needs.parse-trivy-results.result }}
-          U3: ${{ needs.parse-grype-results.result }}
-          U4: ${{ needs.generate-container-summary.result }}
+          U2: ${{ needs.scanner-container.result }}
+          U3: ${{ needs.other-scanners.result }}
+          U4: ${{ needs.scn-detector.result }}
           U5: ${{ needs.ghes-static-analysis.result }}
         run: |
           to_status() {
@@ -183,10 +218,10 @@ jobs:
             --arg u4 "$(to_status "$U4")" \
             --arg u5 "$(to_status "$U5")" \
             '[
-              {"id":"U1","name":"parse-container-config.test.js","detail":"Config parsing unit test (Node.js/jest)","status":$u1},
-              {"id":"U2","name":"test-parse-trivy-results.sh","detail":"Trivy result parser unit test","status":$u2},
-              {"id":"U3","name":"test-parse-grype-results.sh","detail":"Grype result parser unit test","status":$u3},
-              {"id":"U4","name":"test-generate-container-summary.sh","detail":"Summary generation unit test","status":$u4},
+              {"id":"U1","name":"parse-container-config","detail":"Config parsing, schema validation, matrix generation (Python/pytest)","status":$u1},
+              {"id":"U2","name":"scanner-container","detail":"Trivy parser, Grype parser, summary generation (Python/pytest)","status":$u2},
+              {"id":"U3","name":"other scanner tests","detail":"Checkov, ClamAV, CodeQL, OpenGrep, Trivy-IaC, ZAP (Python/pytest)","status":$u3},
+              {"id":"U4","name":"scn-detector tests","detail":"SCN detector AI classifier, diff helpers, report generation (Python/pytest)","status":$u4},
               {"id":"U5","name":"GHES static analysis","detail":"No hardcoded github.com URLs in actions","status":$u5}
             ]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
