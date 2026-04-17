@@ -222,6 +222,25 @@ a.log-link:hover { text-decoration: underline; }
 .rate { font-weight: 600; }
 .rate.good { color: var(--pass-fg); }
 .rate.bad { color: var(--fail-fg); }
+/* History chart */
+.chart-container {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 16px; margin-bottom: 24px;
+}
+.chart-container h3 { margin: 0 0 12px; font-size: 0.95rem; font-weight: 600; }
+.chart-svg { width: 100%; height: 180px; }
+.chart-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.chart-area { fill: var(--accent); opacity: 0.1; }
+.chart-point { fill: var(--accent); }
+.chart-point.fail { fill: var(--fail-fg); }
+.chart-axis { stroke: var(--border); stroke-width: 1; }
+.chart-grid { stroke: var(--border); stroke-width: 0.5; stroke-dasharray: 4,4; opacity: 0.5; }
+.chart-label { font-size: 10px; fill: var(--fg2); }
+.chart-tooltip {
+  position: absolute; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 6px 10px; font-size: 0.75rem; pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 100;
+}
 footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--fg2); }
 </style>
 </head>
@@ -241,6 +260,11 @@ footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border
   <div class="section-title">Detailed Results</div>
   <div id="details"></div>
   <div class="section-title">Run History</div>
+  <div id="chart-container" class="chart-container">
+    <h3>Pass Rate Trend (Last 20 Runs)</h3>
+    <svg id="history-chart" class="chart-svg"></svg>
+  </div>
+  <div id="chart-tooltip" class="chart-tooltip" style="display:none"></div>
   <table id="history-table">
     <thead><tr><th>Date</th><th>Scope</th><th>Result</th><th>Passed</th><th>Rate</th><th>Link</th></tr></thead>
     <tbody></tbody>
@@ -381,6 +405,111 @@ cat >> "$OUT/index.html" << 'HTMLEOF2'
       '<td><a class="log-link" href="' + h.url + '">run</a></td>';
     histTbody.appendChild(tr);
   });
+
+  // --- history chart ---
+  function renderChart() {
+    const svg = document.getElementById('history-chart');
+    const container = document.getElementById('chart-container');
+    const tooltip = document.getElementById('chart-tooltip');
+    const data = d.history; // oldest first
+
+    if (data.length < 2) {
+      container.innerHTML = '<p style="color:var(--fg2);font-size:0.85rem;margin:0">Not enough data for chart (need at least 2 runs)</p>';
+      return;
+    }
+
+    const rect = svg.getBoundingClientRect();
+    const W = rect.width || 800;
+    const H = rect.height || 180;
+    const pad = { top: 20, right: 20, bottom: 30, left: 40 };
+    const chartW = W - pad.left - pad.right;
+    const chartH = H - pad.top - pad.bottom;
+
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.innerHTML = '';
+
+    // scales
+    const xStep = chartW / (data.length - 1);
+    const yMin = 0, yMax = 100;
+    const yScale = function(v) { return pad.top + chartH - (v / yMax) * chartH; };
+    const xScale = function(i) { return pad.left + i * xStep; };
+
+    // grid lines
+    var gridHtml = '';
+    [0, 25, 50, 75, 100].forEach(function(v) {
+      const y = yScale(v);
+      gridHtml += '<line class="chart-grid" x1="' + pad.left + '" y1="' + y + '" x2="' + (W - pad.right) + '" y2="' + y + '"/>';
+      gridHtml += '<text class="chart-label" x="' + (pad.left - 6) + '" y="' + (y + 3) + '" text-anchor="end">' + v + '%</text>';
+    });
+
+    // axes
+    gridHtml += '<line class="chart-axis" x1="' + pad.left + '" y1="' + pad.top + '" x2="' + pad.left + '" y2="' + (H - pad.bottom) + '"/>';
+    gridHtml += '<line class="chart-axis" x1="' + pad.left + '" y1="' + (H - pad.bottom) + '" x2="' + (W - pad.right) + '" y2="' + (H - pad.bottom) + '"/>';
+
+    // area path
+    var areaPath = 'M' + xScale(0) + ',' + (H - pad.bottom);
+    data.forEach(function(pt, i) {
+      areaPath += ' L' + xScale(i) + ',' + yScale(pt.rate);
+    });
+    areaPath += ' L' + xScale(data.length - 1) + ',' + (H - pad.bottom) + ' Z';
+    gridHtml += '<path class="chart-area" d="' + areaPath + '"/>';
+
+    // line path
+    var linePath = '';
+    data.forEach(function(pt, i) {
+      linePath += (i === 0 ? 'M' : ' L') + xScale(i) + ',' + yScale(pt.rate);
+    });
+    gridHtml += '<path class="chart-line" d="' + linePath + '"/>';
+
+    // points
+    data.forEach(function(pt, i) {
+      const cx = xScale(i);
+      const cy = yScale(pt.rate);
+      const cls = pt.verdict === 'PASS' ? 'chart-point' : 'chart-point fail';
+      gridHtml += '<circle class="' + cls + '" cx="' + cx + '" cy="' + cy + '" r="5" data-idx="' + i + '" style="cursor:pointer"/>';
+    });
+
+    // x-axis labels (show first, last, and a few in between)
+    var labelIndices = [0];
+    if (data.length > 4) {
+      labelIndices.push(Math.floor(data.length / 2));
+    }
+    labelIndices.push(data.length - 1);
+    labelIndices.forEach(function(i) {
+      const x = xScale(i);
+      const dateShort = data[i].date.split(' ')[0]; // just YYYY-MM-DD
+      gridHtml += '<text class="chart-label" x="' + x + '" y="' + (H - pad.bottom + 16) + '" text-anchor="middle">' + dateShort + '</text>';
+    });
+
+    svg.innerHTML = gridHtml;
+
+    // tooltip interaction
+    svg.querySelectorAll('circle').forEach(function(circle) {
+      circle.addEventListener('mouseenter', function(e) {
+        const idx = parseInt(circle.getAttribute('data-idx'));
+        const pt = data[idx];
+        tooltip.innerHTML =
+          '<strong>' + pt.date + '</strong><br>' +
+          'Scope: ' + pt.scope + '<br>' +
+          'Result: ' + pt.verdict + '<br>' +
+          'Passed: ' + pt.passed + '/' + pt.total + ' (' + pt.rate + '%)';
+        tooltip.style.display = 'block';
+        const tr = circle.getBoundingClientRect();
+        tooltip.style.left = (tr.left + window.scrollX - 60) + 'px';
+        tooltip.style.top = (tr.top + window.scrollY - 80) + 'px';
+      });
+      circle.addEventListener('mouseleave', function() {
+        tooltip.style.display = 'none';
+      });
+      circle.addEventListener('click', function() {
+        const idx = parseInt(circle.getAttribute('data-idx'));
+        window.open(data[idx].url, '_blank');
+      });
+    });
+  }
+
+  renderChart();
+  window.addEventListener('resize', renderChart);
 })();
 </script>
 </body>
